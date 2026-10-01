@@ -1,4 +1,4 @@
-"""Configuration loading (config.yaml + environment variables)."""
+"""Configuration loading (config.yaml + environment variables). Consumed only by the composition root."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class RepoSpec(BaseModel):
 
 
 class McpServerSpec(BaseModel):
-    """An MCP server the search agent may use. ``command``/``args`` launch it over stdio."""
+    """A job-board MCP server; each one becomes an independent JobSource adapter."""
 
     name: str
     command: str

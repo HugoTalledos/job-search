@@ -1,0 +1,107 @@
+"""Ports: the interfaces the application core needs from the outside world.
+
+Every tool the agent uses (LLM, job boards via MCP, git hosting, notifications, storage) is reached
+only through one of these protocols. Adapters in ``job_agent.adapters`` implement them and
+``job_agent.bootstrap`` wires them together.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from ..domain.models import (
+    JobAlert,
+    JobMatch,
+    JobPosting,
+    MatchRecord,
+    Profile,
+    RepoEvidence,
+    RepoRef,
+    SavedApplication,
+    SearchCriteria,
+    StoredProfile,
+    TailoredResume,
+)
+
+# --- Candidate data ----------------------------------------------------------------------------
+
+
+class ResumeSource(Protocol):
+    """Where the candidate's base resume lives."""
+
+    def read(self) -> str: ...
+
+
+class CodeRepositoryReader(Protocol):
+    """Access to the candidate's code repositories (GitHub, GitLab, any git remote...)."""
+
+    def list_repositories(self) -> list[RepoRef]: ...
+
+    def head(self, repo: RepoRef) -> str:
+        """Current commit id, cheap to obtain; empty string if unknown."""
+        ...
+
+    def collect_evidence(self, repo: RepoRef) -> RepoEvidence | None: ...
+
+
+class ProfileStore(Protocol):
+    def load(self) -> StoredProfile | None: ...
+
+    def save(self, stored: StoredProfile) -> None: ...
+
+
+# --- Reasoning (LLM-backed in production) -----------------------------------------------------
+
+
+class ProfileInferer(Protocol):
+    def infer(self, resume_text: str, evidence: list[RepoEvidence], preferred_locations: list[str]) -> Profile: ...
+
+
+class JobMatcher(Protocol):
+    def score(self, job: JobPosting, profile: Profile, resume_text: str) -> JobMatch: ...
+
+
+class ResumeTailor(Protocol):
+    def tailor(self, job: JobPosting, match: JobMatch, profile: Profile, resume_text: str) -> TailoredResume: ...
+
+
+# --- Job market ---------------------------------------------------------------------------------
+
+
+@runtime_checkable
+class JobSource(Protocol):
+    """A place to find postings: a LinkedIn MCP server, another job-board MCP server, web search..."""
+
+    @property
+    def name(self) -> str: ...
+
+    def search(self, criteria: SearchCriteria) -> list[JobPosting]: ...
+
+
+# --- Outputs -----------------------------------------------------------------------------------
+
+
+class ApplicationStore(Protocol):
+    """Persists tailored resumes (rendered) for a posting."""
+
+    def save(self, job: JobPosting, match: JobMatch, tailored: TailoredResume) -> SavedApplication: ...
+
+
+class Notifier(Protocol):
+    def notify(self, alert: JobAlert) -> None: ...
+
+
+class SeenJobsRepository(Protocol):
+    def is_seen(self, job: JobPosting) -> bool: ...
+
+    def seen_urls(self) -> list[str]: ...
+
+    def mark(self, job: JobPosting, score: int | None) -> None: ...
+
+    def commit(self) -> None:
+        """Flush pending changes to durable storage."""
+        ...
+
+
+class MatchHistory(Protocol):
+    def append(self, record: MatchRecord) -> None: ...

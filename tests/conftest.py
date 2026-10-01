@@ -1,6 +1,6 @@
 import pytest
 
-from job_agent.models import JobMatch, JobPosting, Profile, ResumeChange, Skill, TailoredResume
+from job_agent.domain.models import JobMatch, JobPosting, Profile, ResumeChange, Skill, TailoredResume
 
 
 @pytest.fixture
