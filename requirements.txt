@@ -1,0 +1,8 @@
+anthropic[mcp]>=1.11
+pydantic>=2.7
+pyyaml>=6
+httpx>=0.27
+markdown>=3.6
+pypdf>=4
+weasyprint>=62
+mcp>=2

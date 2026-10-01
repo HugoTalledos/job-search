@@ -1,0 +1,44 @@
+# Configuración del agente de búsqueda de empleo.
+# Los valores ${VAR} se toman de variables de entorno (secrets en GitHub Actions).
+
+# Hoja de vida base: Markdown (recomendado), .txt o .pdf
+resume_path: resume/base.md
+
+# Repositorios que el agente analiza para inferir tu perfil.
+github_user: HugoTalledos      # lista tus repos públicos (y privados si REPO_READ_TOKEN tiene acceso)
+include_forks: false
+max_repos: 15
+repositories: []               # repos adicionales en cualquier remoto git, p. ej.:
+#  - url: https://gitlab.com/usuario/proyecto.git
+#  - url: https://github.com/HugoTalledos/otro-repo.git
+#    branch: main
+
+# Re-inferir el perfil como máximo cada N días (también se rehace si cambian el CV o los repos).
+profile_refresh_days: 7
+
+search:
+  locations: ["Remote", "Colombia"]
+  extra_keywords: []
+  exclude_companies: []
+  posted_within_days: 2
+  max_jobs_per_run: 25
+
+  # Búsqueda web de Anthropic como fuente adicional (sin MCP). Restringe a portales de empleo.
+  web_search: false
+  web_search_domains: [linkedin.com, computrabajo.com, getonbrd.com, weworkremotely.com, remoteok.com]
+
+  # Fuentes MCP. Cualquier servidor MCP de empleo se agrega aquí: el agente usa todas sus herramientas.
+  mcp_servers:
+    - name: linkedin
+      command: uvx
+      args: ["mcp-server-linkedin@latest"]
+      env:
+        UV_HTTP_TIMEOUT: "300"
+    # - name: otra-fuente
+    #   command: npx
+    #   args: ["-y", "some-jobs-mcp-server"]
+    #   env: { API_KEY: "${SOME_JOBS_API_KEY}" }
+
+matching:
+  min_score_to_notify: 70   # notificar ofertas con afinidad >= 70/100
+  min_score_to_tailor: 70   # crear CV ajustado si además el CV actual no te hace justicia
