@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from ...domain.models import JobLead, JobPosting, SearchPlan
+from ...domain.models import JobLead, JobPosting, SearchPlan, SourceCollection
+from ...domain.policies import lead_key
 from .linkedin_text import parse_job_posting
 
 log = logging.getLogger(__name__)
@@ -92,6 +93,25 @@ class LinkedInMcpJobSource:
     def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
         return asyncio.run(self._collect(plan, admit, max_details))
 
+    def collect_new(
+        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], set[str]], max_details: int,
+    ) -> SourceCollection:
+        return asyncio.run(self._collect_new(plan, known_keys, max_details))
+
+    async def _collect_new(
+        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], set[str]], max_details: int,
+    ) -> SourceCollection:
+        async with AsyncExitStack() as stack:
+            session = await open_mcp_session(stack, self.server)
+            ids = await self._search(session, plan)
+            leads = [JobLead(source=self.name, external_id=job_id,
+                             url=f"https://www.linkedin.com/jobs/view/{job_id}/") for job_id in ids]
+            known = known_keys(leads) if leads else set()
+            admitted = [lead for lead in leads if lead_key(lead) not in known][:max_details]
+            log.info("[linkedin] %d unique ids, %d known, %d to fetch", len(leads), len(known), len(admitted))
+            jobs, errors = await self._fetch_details(session, admitted)
+            return SourceCollection(jobs=jobs, leads=len(leads), known=len(known), detail_errors=errors)
+
     async def _collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
         async with AsyncExitStack() as stack:
             session = await open_mcp_session(stack, self.server)
@@ -106,26 +126,33 @@ class LinkedInMcpJobSource:
                     admitted.append(lead)
             log.info("[linkedin] %d unique ids, %d new (details budget %d)", len(ids), len(admitted), max_details)
 
-            postings = []
-            started = time.monotonic()
-            for n, lead in enumerate(admitted, 1):
-                t0 = time.monotonic()
-                try:
-                    data = await call_tool(session, "get_job_details", {"job_id": lead.external_id}, self.tool_timeout)
-                except McpToolError as exc:
-                    log.warning("[linkedin] detail %d/%d (%s) failed: %s", n, len(admitted), lead.external_id, exc)
-                    continue
-                text = (data.get("sections") or {}).get("job_posting", "")
-                if not text:
-                    log.warning("[linkedin] detail %d/%d (%s) returned no text: %s",
-                                n, len(admitted), lead.external_id, data.get("section_errors"))
-                    continue
-                posting = parse_job_posting(lead.external_id, data.get("url") or lead.url, text)
-                postings.append(posting)
-                log.info("[linkedin] detail %d/%d in %.0fs: %s @ %s", n, len(admitted), time.monotonic() - t0,
-                         posting.title or "?", posting.company or "?")
-            log.info("[linkedin] %d details fetched in %.0fs", len(postings), time.monotonic() - started)
+            postings, _ = await self._fetch_details(session, admitted)
             return postings
+
+    async def _fetch_details(self, session: ClientSession, admitted: list[JobLead]) -> tuple[list[JobPosting], list[str]]:
+        postings: list[JobPosting] = []
+        errors: list[str] = []
+        started = time.monotonic()
+        for n, lead in enumerate(admitted, 1):
+            t0 = time.monotonic()
+            try:
+                data = await call_tool(session, "get_job_details", {"job_id": lead.external_id}, self.tool_timeout)
+            except McpToolError as exc:
+                errors.append(f"{lead.external_id}: {exc}")
+                log.warning("[linkedin] detail %d/%d (%s) failed: %s", n, len(admitted), lead.external_id, exc)
+                continue
+            text = (data.get("sections") or {}).get("job_posting", "")
+            if not text:
+                errors.append(f"{lead.external_id}: no job posting text")
+                log.warning("[linkedin] detail %d/%d (%s) returned no text: %s",
+                            n, len(admitted), lead.external_id, data.get("section_errors"))
+                continue
+            posting = parse_job_posting(lead.external_id, data.get("url") or lead.url, text)
+            postings.append(posting)
+            log.info("[linkedin] detail %d/%d in %.0fs: %s @ %s", n, len(admitted), time.monotonic() - t0,
+                     posting.title or "?", posting.company or "?")
+        log.info("[linkedin] %d details fetched in %.0fs", len(postings), time.monotonic() - started)
+        return postings, errors
 
     async def _search(self, session: ClientSession, plan: SearchPlan) -> list[str]:
         ids: dict[str, None] = {}  # ordered set: newest first within each query

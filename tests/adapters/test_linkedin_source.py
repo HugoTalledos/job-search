@@ -5,6 +5,7 @@ from pathlib import Path
 from job_agent.adapters.job_sources import LinkedInMcpJobSource, McpServerParams
 from job_agent.application.ports import JobSource
 from job_agent.domain.models import SearchPlan, SearchQuery
+from job_agent.domain.policies import lead_key
 
 
 def _source(tmp_path, slow_id="", tool_timeout=200.0):
@@ -70,3 +71,33 @@ def test_stuck_detail_is_skipped_after_timeout(tmp_path, caplog):
     assert [p.external_id for p in postings] == ["102"]  # 101 timed out, the run went on
     assert time.monotonic() - started < 20
     assert "detail 1/2 (101) failed" in caplog.text and "detail 2/2 in" in caplog.text
+
+
+def test_collect_new_checks_known_ids_once_before_using_detail_budget(tmp_path):
+    source, log = _source(tmp_path)
+    plan = SearchPlan(queries=[SearchQuery(keywords="backend", location="Colombia"),
+                               SearchQuery(keywords="backend", location="Remote")], posted_within_days=1)
+    batches = []
+
+    def known_keys(leads):
+        batches.append([lead.external_id for lead in leads])
+        return {lead_key(lead) for lead in leads if lead.external_id == "101"}
+
+    result = source.collect_new(plan, known_keys, max_details=1)
+
+    assert batches == [["101", "102", "103"]]
+    assert (result.leads, result.known) == (3, 1)
+    assert [job.external_id for job in result.jobs] == ["102"]
+    assert [call["job_id"] for call in _calls(log) if call["tool"] == "get_job_details"] == ["102"]
+
+
+def test_collect_new_reports_detail_failures_and_continues(tmp_path):
+    source, log = _source(tmp_path, slow_id="101", tool_timeout=2)
+    plan = SearchPlan(queries=[SearchQuery(keywords="backend", location="Colombia")], posted_within_days=1)
+
+    result = source.collect_new(plan, lambda leads: set(), max_details=2)
+
+    assert [job.external_id for job in result.jobs] == ["102"]
+    assert len(result.detail_errors) == 1
+    assert "101" in result.detail_errors[0]
+    assert [call["job_id"] for call in _calls(log) if call["tool"] == "get_job_details"] == ["101", "102"]

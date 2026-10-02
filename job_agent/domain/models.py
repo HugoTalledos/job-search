@@ -161,6 +161,15 @@ class JobLead(BaseModel):
     url: str = ""
 
 
+class SourceCollection(BaseModel):
+    """Results and diagnostics from one job-source collection."""
+
+    jobs: list[JobPosting]
+    leads: int
+    known: int
+    detail_errors: list[str] = Field(default_factory=list)
+
+
 class ResumeUse(BaseModel):
     job_key: str
     title: str
