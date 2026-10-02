@@ -5,3 +5,5 @@ __pycache__/
 config.local.yaml
 .env
 .cache/
+linkedin_session.b64
+*.b64

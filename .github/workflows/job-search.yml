@@ -50,9 +50,16 @@ jobs:
         env:
           LINKEDIN_SESSION_B64: ${{ secrets.LINKEDIN_SESSION_B64 }}
         if: env.LINKEDIN_SESSION_B64 != ''
+        # Generado con scripts/export_linkedin_session.py: solo cookies.json + source-state.json (pocos KB).
+        # En el runner el servidor reconstruye una sesión de navegador nueva a partir de las cookies.
         run: |
           echo "$LINKEDIN_SESSION_B64" | base64 -d | tar -xz -C "$HOME"
-          echo "Sesión restaurada en ~/.linkedin-mcp"
+          chmod -R go-rwx "$HOME/.linkedin-mcp"
+          if [ ! -s "$HOME/.linkedin-mcp/cookies.json" ] || [ ! -s "$HOME/.linkedin-mcp/source-state.json" ]; then
+            echo "::error::LINKEDIN_SESSION_B64 no contiene cookies.json y source-state.json; genéralo con scripts/export_linkedin_session.py"
+            exit 1
+          fi
+          echo "Sesión de LinkedIn restaurada ($(wc -c < "$HOME/.linkedin-mcp/cookies.json") bytes de cookies)"
 
       - name: Re-inferir perfil
         if: inputs.rebuild_profile

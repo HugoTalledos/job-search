@@ -115,12 +115,18 @@ Puedes cambiarlo con la variable `JOB_AGENT_MODEL`.
 4. **Bot de Telegram**: habla con [@BotFather](https://t.me/BotFather) → `/newbot` → token.
    Escríbele algo a tu bot y abre `https://api.telegram.org/bot<TOKEN>/getUpdates` para ver tu `chat.id`.
 5. **Sesión de LinkedIn MCP** ([stickerdaniel/linkedin-mcp-server](https://github.com/stickerdaniel/linkedin-mcp-server)).
-   Este servidor usa una sesión de navegador, no una API key. En tu máquina:
+   Este servidor usa tu sesión de LinkedIn (cookies), no una API key. En tu computador, con este repo clonado:
    ```bash
-   uvx mcp-server-linkedin@latest --login     # inicia sesión; queda en ~/.linkedin-mcp
-   tar -czf - -C ~ .linkedin-mcp | base64 -w0 > linkedin_session.b64
+   uvx mcp-server-linkedin@latest --login                         # se abre un navegador: inicia sesión
+   python scripts/export_linkedin_session.py --set-secret         # con la GitHub CLI (gh) instalada
    ```
-   Guarda el contenido como secret `LINKEDIN_SESSION_B64`. Cuando la sesión expire, repite el paso.
+   El script exporta solo las cookies de LinkedIn y los metadatos de la sesión (menos de 1 KB en base64),
+   no el perfil completo del navegador (cientos de MB, que además supera el límite de 48 KB de los
+   secrets de GitHub). En el runner el servidor reconstruye una sesión nueva a partir de esas cookies.
+   Sin `gh`, ejecuta el script sin `--set-secret` y pega el contenido de `linkedin_session.b64` (es
+   corto) como secret `LINKEDIN_SESSION_B64`. Borra ese archivo después: contiene tu sesión.
+   Si LinkedIn cierra la sesión (al cambiar la contraseña, cerrar sesión en todos los dispositivos o
+   por una verificación de seguridad), repite estos dos comandos.
 6. **Secrets** del repo (Settings → Secrets and variables → Actions):
 
    | Secret | Obligatorio | Uso |
