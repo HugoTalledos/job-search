@@ -71,6 +71,14 @@ class JobMatch(BaseModel):
     posting_title: str = Field(description="Job title exactly as written in the posting")
     posting_company: str = Field(description="Hiring company exactly as written in the posting")
     posting_location: str = Field(description="Location as written in the posting, or empty string")
+    english_level: str = Field(
+        description="English level the posting asks for, briefly (e.g. 'B2', 'Avanzado', 'Conversacional'), "
+        "or empty string if it does not mention one"
+    )
+    salary_range: str = Field(
+        description="Salary or salary range exactly as the posting states it, with currency and period, "
+        "or empty string if it does not state one"
+    )
 
 
 class ResumeChange(BaseModel):
@@ -197,6 +205,7 @@ class JobAlert(BaseModel):
     resume_origin: ResumeOrigin | None = None
     source_version: ResumeVersion | None = None  # version reused or adapted
     reuse_rationale: str | None = None
+    resume_failed: bool = False  # tailoring was attempted but no resume could be produced
 
 
 class MatchRecord(BaseModel):

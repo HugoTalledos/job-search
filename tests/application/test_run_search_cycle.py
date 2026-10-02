@@ -126,6 +126,7 @@ def test_scoring_and_tailoring_failures_are_isolated(profile, job, match, tailor
     assert report.scored == 1 and report.notified == 1 and report.tailored == 0
     assert len(report.errors) == 2
     assert deps["notifier"].alerts[0].tailored is None  # still notified without a tailored resume
+    assert deps["notifier"].alerts[0].resume_failed
     assert not deps["seen"].is_seen_key(job_key(other))  # unscored posting is retried next cycle
 
 

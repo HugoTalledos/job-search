@@ -27,7 +27,8 @@ def profile():
 def match():
     return JobMatch(score=82, verdict="good", reasons=["Python avanzado"], gaps=["Kubernetes"],
                     resume_undersells=True, tailoring_focus=["Destacar AWS"],
-                    posting_title="Backend Engineer", posting_company="Acme", posting_location="Bogotá")
+                    posting_title="Backend Engineer", posting_company="Acme", posting_location="Bogotá",
+                    english_level="B2", salary_range="USD 3.000 - 4.000 / mes")
 
 
 @pytest.fixture

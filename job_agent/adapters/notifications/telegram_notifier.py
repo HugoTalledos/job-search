@@ -15,47 +15,42 @@ TELEGRAM_LIMIT = 4096
 
 
 def format_message(alert: JobAlert) -> str:
-    job, match, tailored = alert.job, alert.match, alert.tailored
-    resume_link = alert.application.link if alert.application else None
+    job, match = alert.job, alert.match
     e = html.escape
     lines = [
         f"<b>🎯 {e(job.title)}</b> — {e(job.company)}",
         f"📍 {e(job.location)} ({e(job.remote)}) · fuente: {e(job.source)}",
         f"⭐ Afinidad: <b>{match.score}/100</b> ({e(match.verdict)})",
-        f'🔗 <a href="{e(job.url, quote=True)}">Ver publicación</a>' if job.url else "",
-        "",
-        "<b>Por qué encaja</b>",
-        *[f"• {e(r)}" for r in match.reasons[:5]],
     ]
-    if match.gaps:
-        lines += ["", "<b>Brechas</b>", *[f"• {e(g)}" for g in match.gaps[:4]]]
-    if resume_link:
-        link = [f'<a href="{e(resume_link, quote=True)}">Ver la hoja de vida</a>']
-    elif alert.application:
-        link = [f"📁 <code>{e(alert.application.folder)}</code>"]
-    else:
-        link = []
-    source = alert.source_version
-    source_desc = f"{e(source.job_title)} — {e(source.company)} ({source.created_at:%Y-%m-%d})" if source else ""
-    if alert.resume_origin == "reused" and source:
-        lines += ["", "<b>♻️ Hoja de vida reutilizada</b>", f"Usé la versión creada para {source_desc}; ya cubre esta oferta."]
-        if alert.reuse_rationale:
-            lines.append(f"<i>{e(alert.reuse_rationale)}</i>")
-        lines += link
-    elif tailored:
-        title = "📝 Hoja de vida adaptada" if alert.resume_origin == "adapted" else "📝 Hoja de vida ajustada"
-        lines += ["", f"<b>{title}</b>"]
-        if alert.resume_origin == "adapted" and source:
-            lines.append(f"Partí de la versión creada para {source_desc}.")
-        lines.append(e(tailored.summary_for_candidate))
-        lines += [f"• <i>{e(c.section)}</i>: {e(c.change)}" for c in tailored.changes[:8]]
-        lines += link
-    elif match.resume_undersells:
-        lines += ["", "Tu hoja de vida podría reforzarse para esta oferta, pero no se generó una versión ajustada."]
-    else:
-        lines += ["", "Tu hoja de vida actual ya cubre bien esta oferta; no se modificó."]
+    if match.english_level.strip():
+        lines.append(f"🗣 Inglés: {e(match.english_level)}")
+    if match.salary_range.strip():
+        lines.append(f"💰 Salario: {e(match.salary_range)}")
+    if job.url:
+        lines.append(f'🔗 <a href="{e(job.url, quote=True)}">Ver publicación</a>')
+    lines += ["", _resume_line(alert)]
+    if alert.application and not alert.resume_failed:
+        if alert.application.link:
+            lines.append(f'<a href="{e(alert.application.link, quote=True)}">Ver la hoja de vida</a>')
+        else:
+            lines.append(f"📁 <code>{e(alert.application.folder)}</code>")
     text = "\n".join(lines)
     return text if len(text) <= TELEGRAM_LIMIT else text[: TELEGRAM_LIMIT - 1] + "…"
+
+
+def _resume_line(alert: JobAlert) -> str:
+    """One line saying what happened with the resume: rewritten, reused, not generated, or unchanged."""
+    source = alert.source_version
+    based_on = f" (versión creada para {html.escape(source.job_title)} — {html.escape(source.company)})" if source else ""
+    if alert.resume_failed:
+        return "⚠️ <b>Hoja de vida:</b> no se pudo generar"
+    if alert.resume_origin == "reused":
+        return f"♻️ <b>Hoja de vida:</b> reutilizada{based_on}"
+    if alert.resume_origin == "adapted":
+        return f"📝 <b>Hoja de vida:</b> reescrita a partir de una existente{based_on}"
+    if alert.resume_origin == "created":
+        return "📝 <b>Hoja de vida:</b> reescrita para esta oferta"
+    return "📄 <b>Hoja de vida:</b> sin cambios, se usa la original"
 
 
 class TelegramNotifier:
