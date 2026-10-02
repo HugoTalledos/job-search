@@ -88,6 +88,12 @@ class ResumeSelector(Protocol):
 # --- Job market ---------------------------------------------------------------------------------
 
 
+class CollectedPostingsRepository(Protocol):
+    """Offers stored by the local collector for later evaluation."""
+
+    def list_postings(self) -> list[JobPosting]: ...
+
+
 @runtime_checkable
 class JobSource(Protocol):
     """A job board queried deterministically (no LLM): LinkedIn via its MCP server, a job-board API...
