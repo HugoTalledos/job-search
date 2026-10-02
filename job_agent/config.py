@@ -44,6 +44,11 @@ class MatchingConfig(BaseModel):
     min_score_to_tailor: int = 70
 
 
+class ResumeReuseConfig(BaseModel):
+    enabled: bool = True
+    max_candidates: int = 20
+
+
 class Config(BaseModel):
     resume_path: str = "resume/base.md"
     github_user: str | None = None
@@ -52,6 +57,7 @@ class Config(BaseModel):
     repositories: list[RepoSpec] = Field(default_factory=list)
     search: SearchConfig = Field(default_factory=SearchConfig)
     matching: MatchingConfig = Field(default_factory=MatchingConfig)
+    resume_reuse: ResumeReuseConfig = Field(default_factory=ResumeReuseConfig)
     profile_refresh_days: int = 7
     language: str = "es"
 

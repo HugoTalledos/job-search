@@ -6,8 +6,8 @@ import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
-from ..domain.models import CycleReport, JobAlert, JobPosting, MatchRecord
-from ..domain.policies import MatchingPolicy, SearchPreferences, job_key
+from ..domain.models import CycleReport, JobAlert, JobPosting, MatchRecord, Profile
+from ..domain.policies import MatchingPolicy, ReusePolicy, SearchPreferences, job_key, resume_fingerprint
 from .build_profile import EnsureProfile
 from .ports import (
     ApplicationStore,
@@ -15,6 +15,7 @@ from .ports import (
     JobSource,
     MatchHistory,
     Notifier,
+    ResumeSelector,
     ResumeSource,
     ResumeTailor,
     SeenJobsRepository,
@@ -32,12 +33,14 @@ class RunSearchCycle:
         sources: Sequence[JobSource],
         matcher: JobMatcher,
         tailor: ResumeTailor,
+        selector: ResumeSelector,
         applications: ApplicationStore,
         notifier: Notifier,
         seen: SeenJobsRepository,
         history: MatchHistory,
         preferences: SearchPreferences,
         policy: MatchingPolicy,
+        reuse: ReusePolicy | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.ensure_profile = ensure_profile
@@ -45,18 +48,21 @@ class RunSearchCycle:
         self.sources = sources
         self.matcher = matcher
         self.tailor = tailor
+        self.selector = selector
         self.applications = applications
         self.notifier = notifier
         self.seen = seen
         self.history = history
         self.preferences = preferences
         self.policy = policy
+        self.reuse = reuse or ReusePolicy()
         self.clock = clock
 
     def execute(self) -> CycleReport:
         report = CycleReport()
         profile = self.ensure_profile.execute()
         resume_text = self.resume.read()
+        base_fp = resume_fingerprint(resume_text)
         criteria = self.preferences.criteria_for(profile, self.seen.seen_urls())
 
         postings = self._search_all(criteria, report)
@@ -78,9 +84,13 @@ class RunSearchCycle:
             alert = JobAlert(job=job, match=match)
             if self.policy.should_tailor(match):
                 try:
-                    alert.tailored = self.tailor.tailor(job, match, profile, resume_text)
-                    alert.application = self.applications.save(job, match, alert.tailored)
-                    report.tailored += 1
+                    self._prepare_resume(alert, profile, resume_text, base_fp)
+                    if alert.resume_origin == "created":
+                        report.tailored += 1
+                    elif alert.resume_origin == "adapted":
+                        report.adapted += 1
+                    elif alert.resume_origin == "reused":
+                        report.reused += 1
                 except Exception as exc:
                     report.errors.append(f"tailor {job.title} @ {job.company}: {exc}")
                     log.exception("Tailoring failed for %s @ %s", job.title, job.company)
@@ -93,6 +103,7 @@ class RunSearchCycle:
                 MatchRecord(
                     at=self.clock(), key=job_key(job), title=job.title, company=job.company, url=job.url,
                     source=job.source, score=match.score, verdict=match.verdict, tailored=bool(alert.tailored),
+                    resume_origin=alert.resume_origin,
                     resume_dir=alert.application.folder if alert.application else None,
                 )
             )
@@ -101,6 +112,36 @@ class RunSearchCycle:
         self.seen.commit()
         log.info("Cycle done: %s", report.model_dump(exclude={"errors"}))
         return report
+
+    def _prepare_resume(self, alert: JobAlert, profile: Profile, resume_text: str, base_fp: str) -> None:
+        """Reuse a stored version that already fits, adapt the closest one, or create a new one."""
+        job, match = alert.job, alert.match
+        candidates = self.reuse.candidates(self.applications.list_versions(), base_fp)
+        by_id = {v.id: v for v in candidates}
+        decision = self.selector.choose(job, match, candidates) if candidates else None
+        chosen = by_id.get(decision.version_id) if decision else None
+        if decision and decision.action != "create" and chosen is None:
+            log.warning("Selector chose unknown version %r; creating a new resume", decision.version_id)
+
+        if decision and chosen and decision.action == "reuse":
+            self.applications.record_use(chosen.id, job)
+            alert.application = self.applications.locate(chosen.id)
+            alert.resume_origin, alert.source_version = "reused", chosen
+            alert.reuse_rationale = decision.rationale
+            log.info("Reusing %s for %s @ %s", chosen.id, job.title, job.company)
+            return
+
+        if decision and chosen and decision.action == "adapt":
+            starting_from = self.applications.load_markdown(chosen.id)
+            alert.tailored = self.tailor.tailor(job, match, profile, resume_text, starting_from=starting_from)
+            alert.application = self.applications.save(job, match, alert.tailored, base_fp, adapted_from=chosen.id)
+            alert.resume_origin, alert.source_version = "adapted", chosen
+            alert.reuse_rationale = decision.rationale
+            return
+
+        alert.tailored = self.tailor.tailor(job, match, profile, resume_text)
+        alert.application = self.applications.save(job, match, alert.tailored, base_fp)
+        alert.resume_origin = "created"
 
     def _search_all(self, criteria, report: CycleReport) -> list[JobPosting]:
         postings: list[JobPosting] = []

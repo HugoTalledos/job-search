@@ -11,6 +11,8 @@ from ...domain.models import (
     JobMatch,
     JobPosting,
     MatchRecord,
+    ResumeUse,
+    ResumeVersion,
     SavedApplication,
     StoredProfile,
     TailoredResume,
@@ -88,32 +90,94 @@ def _slug(text: str, limit: int = 40) -> str:
 
 
 class FileSystemApplicationStore:
-    """ApplicationStore port: ``output/<date>/<company>-<title>-<id>/`` with resume.{md,html,pdf} + README."""
+    """ApplicationStore port: ``output/<date>/<company>-<title>-<id>/`` with resume.{md,html,pdf}, a README
+    explaining the changes and ``version.json`` (the catalogue entry used to decide reuse)."""
+
+    VERSION_FILE = "version.json"
 
     def __init__(self, output_dir: Path, project_root: Path, web_url_base: str | None = None) -> None:
         self.output_dir = output_dir
         self.project_root = project_root
         self.web_url_base = web_url_base  # e.g. https://github.com/<owner>/<repo>/blob/<branch>
 
-    def save(self, job: JobPosting, match: JobMatch, tailored: TailoredResume) -> SavedApplication:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        folder = self.output_dir / day / f"{_slug(job.company, 25)}-{_slug(job.title)}-{job_key(job)[:6]}"
-        paths = write_outputs(tailored.resume_markdown, folder)
-        (folder / "README.md").write_text(self._readme(job, match, tailored))
-        rel = paths["md"].relative_to(self.project_root).as_posix()
+    def save(
+        self,
+        job: JobPosting,
+        match: JobMatch,
+        tailored: TailoredResume,
+        base_fingerprint: str,
+        adapted_from: str | None = None,
+    ) -> SavedApplication:
+        now = datetime.now(timezone.utc)
+        folder = self.output_dir / now.strftime("%Y-%m-%d") / f"{_slug(job.company, 25)}-{_slug(job.title)}-{job_key(job)[:6]}"
+        write_outputs(tailored.resume_markdown, folder)
+        (folder / "README.md").write_text(self._readme(job, match, tailored, adapted_from))
+        version = ResumeVersion(
+            id=self._id(folder),
+            job_key=job_key(job),
+            job_title=job.title,
+            company=job.company,
+            language=tailored.language,
+            highlights=tailored.highlights,
+            base_fingerprint=base_fingerprint,
+            created_at=now,
+            adapted_from=adapted_from,
+            used_for=[ResumeUse(job_key=job_key(job), title=job.title, company=job.company, at=now)],
+        )
+        self._write_version(folder, version)
+        return self.locate(version.id)
+
+    def list_versions(self) -> list[ResumeVersion]:
+        if not self.output_dir.exists():
+            return []
+        return [
+            ResumeVersion.model_validate_json(p.read_text())
+            for p in sorted(self.output_dir.glob(f"*/*/{self.VERSION_FILE}"))
+        ]
+
+    def load_markdown(self, version_id: str) -> str:
+        return (self._folder(version_id) / "resume.md").read_text()
+
+    def locate(self, version_id: str) -> SavedApplication:
+        folder = self._folder(version_id)
+        pdf, md = folder / "resume.pdf", folder / "resume.md"
+        if not md.exists():
+            raise FileNotFoundError(f"No resume stored for version {version_id}")
         return SavedApplication(
-            folder=folder.relative_to(self.project_root).as_posix(),
-            attachment=paths.get("pdf") or paths["md"],
-            link=f"{self.web_url_base}/{rel}" if self.web_url_base else None,
+            version_id=version_id,
+            folder=version_id,
+            attachment=pdf if pdf.exists() else md,
+            link=f"{self.web_url_base}/{version_id}/resume.md" if self.web_url_base else None,
         )
 
+    def record_use(self, version_id: str, job: JobPosting) -> None:
+        folder = self._folder(version_id)
+        version = ResumeVersion.model_validate_json((folder / self.VERSION_FILE).read_text())
+        version.used_for.append(
+            ResumeUse(job_key=job_key(job), title=job.title, company=job.company, at=datetime.now(timezone.utc))
+        )
+        self._write_version(folder, version)
+
+    def _id(self, folder: Path) -> str:
+        return folder.relative_to(self.project_root).as_posix()
+
+    def _folder(self, version_id: str) -> Path:
+        folder = (self.project_root / version_id).resolve()
+        if not folder.is_relative_to(self.output_dir.resolve()):
+            raise ValueError(f"Invalid resume version id: {version_id}")
+        return folder
+
+    def _write_version(self, folder: Path, version: ResumeVersion) -> None:
+        (folder / self.VERSION_FILE).write_text(version.model_dump_json(indent=2))
+
     @staticmethod
-    def _readme(job: JobPosting, match: JobMatch, tailored: TailoredResume) -> str:
+    def _readme(job: JobPosting, match: JobMatch, tailored: TailoredResume, adapted_from: str | None) -> str:
         changes = "\n".join(f"- **{c.section}**: {c.change}\n  - _{c.rationale}_" for c in tailored.changes)
+        origin = f"- Adaptada a partir de: `{adapted_from}`\n" if adapted_from else ""
         return (
             f"# {job.title} — {job.company}\n\n"
             f"- Fuente: {job.source}\n- Ubicación: {job.location} ({job.remote})\n- URL: {job.url}\n"
-            f"- Afinidad: {match.score}/100 ({match.verdict})\n\n"
+            f"- Afinidad: {match.score}/100 ({match.verdict})\n{origin}\n"
             f"## Cambios en la hoja de vida\n\n{tailored.summary_for_candidate}\n\n{changes}\n\n"
             "## Por qué encaja\n\n" + "\n".join(f"- {r}" for r in match.reasons) + "\n\n"
             "## Brechas\n\n" + "\n".join(f"- {g}" for g in match.gaps) + "\n\n"

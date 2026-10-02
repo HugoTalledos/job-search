@@ -6,7 +6,7 @@ import anthropic
 import httpx2
 
 from job_agent.adapters.job_sources import McpJobSource, WebSearchJobSource
-from job_agent.adapters.llm import ClaudeJobMatcher, claude_client
+from job_agent.adapters.llm import ClaudeJobMatcher, ClaudeResumeSelector, ClaudeResumeTailor, claude_client
 from job_agent.application.ports import JobSource
 from job_agent.domain.policies import SearchPreferences
 from tests.adapters.test_mcp_job_source import FAKE
@@ -70,3 +70,40 @@ def test_mcp_source_hands_server_tools_to_agent(monkeypatch, profile, job):
     source = McpJobSource(FAKE)
     assert source.search(SearchPreferences().criteria_for(profile, [])) == [job]
     assert {t["name"] for t in calls[0]["tools"]} == {"submit_jobs", "search_jobs"}
+
+
+def _capture_structured(monkeypatch, payload):
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx2.Response(200, json=_message([{"type": "text", "text": payload}]))
+
+    fake = anthropic.Anthropic(api_key="x", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(claude_client, "_client", fake)
+    return seen
+
+
+def test_selector_sends_library_and_parses_decision(monkeypatch, job, match):
+    from datetime import datetime, timezone
+
+    from job_agent.domain.models import ResumeVersion, ReuseDecision
+
+    decision = ReuseDecision(action="reuse", version_id="output/v1", covered_requirements=["Python"],
+                             missing_requirements=[], rationale="ok")
+    seen = _capture_structured(monkeypatch, decision.model_dump_json())
+    version = ResumeVersion(id="output/v1", job_key="k", job_title="Backend Dev", company="Globex", language="en",
+                            highlights=["Python"], base_fingerprint="f", created_at=datetime.now(timezone.utc))
+    assert ClaudeResumeSelector().choose(job, match, [version]) == decision
+    prompt = seen[0]["messages"][0]["content"]
+    assert '"id": "output/v1"' in prompt and "Backend Dev @ Globex" in prompt
+
+
+def test_tailor_includes_starting_version_only_when_adapting(monkeypatch, job, match, profile, tailored):
+    seen = _capture_structured(monkeypatch, tailored.model_dump_json())
+    tailor = ClaudeResumeTailor()
+    assert tailor.tailor(job, match, profile, "cv") == tailored
+    assert tailor.tailor(job, match, profile, "cv", starting_from="# Previous") == tailored
+    blocks = [[b["text"] for b in call["messages"][0]["content"]] for call in seen]
+    assert not any("<starting_version>" in t for t in blocks[0])
+    assert any("<starting_version>\n# Previous" in t for t in blocks[1])

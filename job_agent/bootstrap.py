@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .adapters.code_repositories import GitRepositoryReader
 from .adapters.job_sources import McpJobSource, McpServerParams, WebSearchJobSource
-from .adapters.llm import ClaudeJobMatcher, ClaudeProfileInferer, ClaudeResumeTailor
+from .adapters.llm import ClaudeJobMatcher, ClaudeProfileInferer, ClaudeResumeSelector, ClaudeResumeTailor
 from .adapters.notifications import ConsoleNotifier, TelegramNotifier
 from .adapters.persistence import (
     FileSystemApplicationStore,
@@ -20,7 +20,7 @@ from .application import EnsureProfile, RunSearchCycle
 from .application.ports import JobSource, Notifier
 from .config import ROOT, Config
 from .domain.models import RepoRef
-from .domain.policies import MatchingPolicy, SearchPreferences
+from .domain.policies import MatchingPolicy, ReusePolicy, SearchPreferences
 
 
 @dataclass
@@ -76,6 +76,7 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
         sources=build_job_sources(cfg),
         matcher=ClaudeJobMatcher(),
         tailor=ClaudeResumeTailor(),
+        selector=ClaudeResumeSelector(),
         applications=FileSystemApplicationStore(ROOT / "output", ROOT, _web_url_base()),
         notifier=notifier,
         seen=JsonSeenJobsRepository(data / "state.json"),
@@ -88,5 +89,6 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
             max_jobs_per_run=cfg.search.max_jobs_per_run,
         ),
         policy=MatchingPolicy(cfg.matching.min_score_to_notify, cfg.matching.min_score_to_tailor),
+        reuse=ReusePolicy(cfg.resume_reuse.enabled, cfg.resume_reuse.max_candidates),
     )
     return Container(ensure_profile=ensure_profile, run_search_cycle=run_search_cycle, notifier=notifier)

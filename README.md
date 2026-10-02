@@ -27,12 +27,33 @@ repos git ─► │             (solo se rehace si cambian o pasan N días)    
 | Perfil | `EnsureProfile` · `ResumeSource`, `CodeRepositoryReader`, `ProfileInferer`, `ProfileStore` | Clona (superficialmente) tus repos de GitHub — o cualquier remoto git — y extrae lenguajes, árbol, README y manifiestos. Claude infiere roles objetivo, seniority, habilidades con evidencia y lo que tus repos demuestran pero tu CV no menciona. Se persiste en `data/profile.json` con una huella del CV + commits; solo se recalcula si algo cambia o cada `profile_refresh_days`. |
 | Búsqueda | `RunSearchCycle` · `JobSource` (uno por fuente) | Cada servidor MCP de `config.yaml` (LinkedIn de entrada) es un `JobSource` independiente: un agente Claude recibe las herramientas de ese servidor, busca con tus roles/palabras clave/ubicaciones y entrega ofertas validadas mediante `submit_jobs`. La búsqueda web de Anthropic es otro `JobSource`. Si una fuente falla, las demás siguen. |
 | Afinidad | `JobMatcher` | Puntaje 0-100, motivos, brechas y `resume_undersells` (encajas, pero tu CV actual no lo muestra). |
-| CV a medida | `ResumeTailor`, `ApplicationStore` | Reescribe resumen, orden y viñetas con el vocabulario de la oferta y agrega proyectos de tus repos. **Regla dura: solo usa hechos de tu CV o de tus repos**; nunca inventa empresas, fechas, títulos ni métricas. Cada cambio queda justificado en `README.md` dentro de la carpeta de la oferta. |
+| CV a medida | `ResumeSelector`, `ResumeTailor`, `ApplicationStore` | Antes de escribir un CV nuevo revisa el catálogo de versiones ya ajustadas (ver [Reutilización](#reutilización-de-hojas-de-vida)): reutiliza, adapta la más parecida o crea una nueva. Al crear o adaptar, reescribe resumen, orden y viñetas con el vocabulario de la oferta y agrega proyectos de tus repos. **Regla dura: solo usa hechos de tu CV o de tus repos**; nunca inventa empresas, fechas, títulos ni métricas. Cada cambio queda justificado en `README.md` dentro de la carpeta de la versión. |
 | Aviso | `Notifier` | Telegram (mensaje + PDF). Con `--dry-run` o sin credenciales, se usa el notificador de consola. |
 | Estado | `SeenJobsRepository`, `MatchHistory` | Evita repetir ofertas (por id, url o empresa+cargo para reposts). Historial en `data/matches.jsonl`. |
 
 Las reglas de negocio (umbrales para notificar/ajustar, identidad y duplicados de ofertas, vigencia
 del perfil, criterios de búsqueda) viven en `job_agent/domain/policies.py`.
+
+## Reutilización de hojas de vida
+
+Cada CV ajustado se guarda en `output/AAAA-MM-DD/<empresa>-<cargo>-<id>/` con `resume.md`/`.html`/`.pdf`,
+un `README.md` con los cambios y `version.json`: la ficha del catálogo (para qué oferta se creó, idioma,
+qué destaca, de qué versión de tu CV base sale y para qué ofertas se ha usado).
+
+Cuando una oferta nueva amerita un CV ajustado, el agente:
+
+1. Toma las versiones creadas a partir de tu `resume/base.md` **actual** (las 20 más recientes). Si
+   cambias tu CV base, las versiones anteriores dejan de ofrecerse, para no enviar datos desactualizados.
+2. Si hay alguna, Claude compara la oferta con ese catálogo y decide:
+   - **reutilizar** una versión que ya muestra los requisitos clave y está en el idioma de la oferta;
+     no se genera nada nuevo y se registra el uso en `version.json`;
+   - **adaptar** la más cercana con cambios mínimos, que se guarda como versión nueva con
+     `adapted_from` apuntando a la original;
+   - **crear** una nueva desde tu CV base.
+3. La notificación dice cuál de los tres casos ocurrió y, al reutilizar o adaptar, cuál versión usó.
+
+Se configura en `config.yaml` → `resume_reuse` (`enabled`, `max_candidates`). Como estas versiones
+viven en el repo, mantenlo **privado**.
 
 ## Arquitectura hexagonal
 
@@ -45,7 +66,7 @@ archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con q
  GitHub Actions │ entrypoints/cli.py │                  │ llm/            Claude            │
 (cron 3×/día)─►│                    │                  │   ClaudeProfileInferer           │
                 └─────────┬──────────┘                  │   ClaudeJobMatcher               │
-                          │                             │   ClaudeResumeTailor             │
+                          │                             │   ClaudeResumeTailor / Selector  │
               ┌───────────▼───────────────┐  puertos    │ job_sources/                      │
               │ application/              │◄───────────►│   McpJobSource  (LinkedIn, …)     │
               │   EnsureProfile           │ (ports.py)  │   WebSearchJobSource              │

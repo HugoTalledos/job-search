@@ -19,11 +19,24 @@ Hard rules:
   entry for repositories that demonstrate required skills.
 - Write the resume in the same language as the job posting. Keep it to about one or two pages.
 - Output clean Markdown: `# Name`, a contact line, then `## Section` headings and bullet lists.
-List each modification in `changes` and summarise them for the candidate (in Spanish)."""
+Set `language` to the resume's language and `highlights` to what this version puts forward.
+List each modification in `changes` and summarise them for the candidate (in Spanish).
+
+When a <starting_version> is given, it is a resume already tailored (from the same base resume) for a
+similar posting. Start from it and make the smallest changes that make it fit the new posting; list
+only those changes, relative to the starting version. The hard rules still apply: anything you add must
+be backed by the base resume or the profile."""
 
 
 class ClaudeResumeTailor:
-    def tailor(self, job: JobPosting, match: JobMatch, profile: Profile, resume_text: str) -> TailoredResume:
+    def tailor(
+        self,
+        job: JobPosting,
+        match: JobMatch,
+        profile: Profile,
+        resume_text: str,
+        starting_from: str | None = None,
+    ) -> TailoredResume:
         content = [
             {
                 "type": "text",
@@ -36,4 +49,6 @@ class ClaudeResumeTailor:
                 "<fit_analysis>\n" + match.model_dump_json(indent=1) + "\n</fit_analysis>",
             },
         ]
+        if starting_from:
+            content.append({"type": "text", "text": f"<starting_version>\n{starting_from}\n</starting_version>"})
         return claude_client.structured(system=SYSTEM, content=content, schema=TailoredResume, effort="high", max_tokens=16000)

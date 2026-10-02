@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .models import JobMatch, JobPosting, Profile, SearchCriteria, StoredProfile
+from .models import JobMatch, JobPosting, Profile, ResumeVersion, SearchCriteria, StoredProfile
 
 
 def _norm(text: str) -> str:
@@ -76,3 +76,26 @@ def profile_fingerprint(resume_text: str, repo_heads: list[str]) -> str:
 
 def profile_is_current(stored: StoredProfile, fingerprint: str, now: datetime, refresh_days: int) -> bool:
     return stored.fingerprint == fingerprint and now - stored.built_at < timedelta(days=refresh_days)
+
+
+def resume_fingerprint(resume_text: str) -> str:
+    """Identifies the base resume a tailored version was derived from."""
+    return hashlib.sha256(resume_text.strip().encode()).hexdigest()[:16]
+
+
+@dataclass(frozen=True)
+class ReusePolicy:
+    """Which stored versions may be offered for reuse.
+
+    Only versions derived from the current base resume qualify: if the base changed (new job, new
+    skills, corrected data), older versions could carry outdated information.
+    """
+
+    enabled: bool = True
+    max_candidates: int = 20
+
+    def candidates(self, versions: list[ResumeVersion], base_fingerprint: str) -> list[ResumeVersion]:
+        if not self.enabled:
+            return []
+        current = [v for v in versions if v.base_fingerprint == base_fingerprint]
+        return sorted(current, key=lambda v: v.created_at, reverse=True)[: self.max_candidates]

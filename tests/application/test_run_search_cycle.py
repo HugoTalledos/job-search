@@ -8,12 +8,13 @@ from tests.fakes import (
     MemoryHistory,
     MemorySeen,
     RecordingNotifier,
+    ScriptedSelector,
     StaticProfile,
     TableMatcher,
 )
 
 
-def _cycle(profile, sources, matcher, tailor, **prefs):
+def _cycle(profile, sources, matcher, tailor, selector=None, **prefs):
     deps = dict(
         notifier=RecordingNotifier(), seen=MemorySeen(), history=MemoryHistory(), applications=MemoryApplications()
     )
@@ -23,6 +24,7 @@ def _cycle(profile, sources, matcher, tailor, **prefs):
         sources=sources,
         matcher=matcher,
         tailor=tailor,
+        selector=selector or ScriptedSelector("create"),
         preferences=SearchPreferences(**prefs),
         policy=MatchingPolicy(70, 70),
         **deps,
@@ -88,3 +90,58 @@ def test_max_jobs_per_run(profile, job, match, tailored):
     uc, deps = _cycle(profile, [FakeSource("s", jobs)], TableMatcher({j.title: match for j in jobs}),
                       FakeTailor(tailored), max_jobs_per_run=2)
     assert uc.execute().scored == 2
+
+
+def _similar(job, n):
+    return job.model_copy(update={"external_id": f"s{n}", "title": f"Backend Engineer {n}", "url": f"https://x/s{n}"})
+
+
+def _two_cycles(profile, job, match, tailored, selector, resume=None):
+    """First cycle creates a version for ``job``; the second sees a similar posting."""
+    second = _similar(job, 2)
+    source = FakeSource("s", [job])
+    tailor = FakeTailor(tailored)
+    uc, deps = _cycle(profile, [source], TableMatcher({job.title: match, second.title: match}), tailor, selector)
+    first = uc.execute()
+    assert first.tailored == 1 and selector.offered == []  # empty library: no selector call
+    source.jobs = [second]
+    if resume is not None:
+        uc.resume = resume
+    return uc.execute(), deps, tailor, second
+
+
+def test_reuses_matching_version(profile, job, match, tailored):
+    selector = ScriptedSelector("reuse")
+    report, deps, tailor, second = _two_cycles(profile, job, match, tailored, selector)
+    assert (report.reused, report.adapted, report.tailored) == (1, 0, 0)
+    assert len(tailor.calls) == 1  # no new tailoring
+    alert = deps["notifier"].alerts[-1]
+    assert alert.resume_origin == "reused" and alert.tailored is None
+    assert alert.source_version.job_title == job.title and alert.reuse_rationale == "motivo"
+    [version] = deps["applications"].list_versions()
+    assert [u.title for u in version.used_for] == [job.title, second.title]
+    assert deps["history"].records[-1].resume_origin == "reused"
+
+
+def test_adapts_closest_version(profile, job, match, tailored):
+    selector = ScriptedSelector("adapt")
+    report, deps, tailor, second = _two_cycles(profile, job, match, tailored, selector)
+    assert (report.reused, report.adapted, report.tailored) == (0, 1, 0)
+    assert tailor.starting_from == [None, tailored.resume_markdown]
+    versions = {v.job_title: v for v in deps["applications"].list_versions()}
+    assert versions[second.title].adapted_from == versions[job.title].id
+    assert deps["notifier"].alerts[-1].resume_origin == "adapted"
+
+
+def test_creates_when_selector_says_so_or_picks_unknown_version(profile, job, match, tailored):
+    for selector in (ScriptedSelector("create"), ScriptedSelector("reuse", version_id="does-not-exist")):
+        report, deps, tailor, _ = _two_cycles(profile, job, match, tailored, selector)
+        assert (report.reused, report.adapted, report.tailored) == (0, 0, 1)
+        assert tailor.starting_from == [None, None]
+
+
+def test_versions_from_an_older_base_resume_are_not_offered(profile, job, match, tailored):
+    selector = ScriptedSelector("reuse")
+    report, deps, tailor, _ = _two_cycles(profile, job, match, tailored, selector, resume=FakeResume("# CV v2"))
+    assert selector.offered == []  # old version invalidated -> straight to create
+    assert report.tailored == 1 and report.reused == 0

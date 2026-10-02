@@ -42,3 +42,9 @@ search:
 matching:
   min_score_to_notify: 70   # notificar ofertas con afinidad >= 70/100
   min_score_to_tailor: 70   # crear CV ajustado si además el CV actual no te hace justicia
+
+# Reutilizar hojas de vida ya ajustadas (output/**/version.json) cuando una oferta nueva es parecida.
+# Solo se consideran versiones creadas a partir de tu resume/base.md actual: si lo cambias, se generan nuevas.
+resume_reuse:
+  enabled: true
+  max_candidates: 20        # versiones más recientes que se le muestran al selector

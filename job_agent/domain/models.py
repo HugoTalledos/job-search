@@ -76,8 +76,25 @@ class ResumeChange(BaseModel):
 
 class TailoredResume(BaseModel):
     resume_markdown: str = Field(description="The full tailored resume in Markdown")
+    language: str = Field(description="ISO 639-1 code of the language the resume is written in, e.g. 'es' or 'en'")
+    highlights: list[str] = Field(
+        description="Skills, technologies and requirements this version puts forward (short phrases)"
+    )
     changes: list[ResumeChange]
     summary_for_candidate: str = Field(description="2-3 sentence summary of the modifications, in Spanish")
+
+
+class ReuseDecision(BaseModel):
+    """Whether an already tailored resume can serve a new posting."""
+
+    action: Literal["reuse", "adapt", "create"] = Field(
+        description="reuse: an existing version already covers the key requirements and is in the posting's "
+        "language; adapt: one is close and needs small changes; create: none is close enough"
+    )
+    version_id: str = Field(description="id of the chosen version for reuse/adapt; empty string for create")
+    covered_requirements: list[str] = Field(description="Key requirements of the posting the version already shows")
+    missing_requirements: list[str] = Field(description="Key requirements the version does not show")
+    rationale: str = Field(description="One or two sentences explaining the decision, in Spanish")
 
 
 # --- Entities and value objects that never go through the LLM -------------------------------------
@@ -119,12 +136,38 @@ class SearchCriteria(BaseModel):
     already_seen_urls: list[str]
 
 
-class SavedApplication(BaseModel):
-    """A tailored resume persisted for one posting."""
+class ResumeUse(BaseModel):
+    job_key: str
+    title: str
+    company: str
+    at: datetime
 
+
+class ResumeVersion(BaseModel):
+    """Catalogue entry of a tailored resume, used to decide whether it can be reused."""
+
+    id: str
+    job_key: str
+    job_title: str
+    company: str
+    language: str
+    highlights: list[str]
+    base_fingerprint: str = Field(description="Fingerprint of the base resume this version was derived from")
+    created_at: datetime
+    adapted_from: str | None = None
+    used_for: list[ResumeUse] = Field(default_factory=list)
+
+
+class SavedApplication(BaseModel):
+    """Where a tailored resume lives: folder, file to attach, web link."""
+
+    version_id: str
     folder: str
     attachment: Path | None = None
     link: str | None = None
+
+
+ResumeOrigin = Literal["created", "adapted", "reused"]
 
 
 class JobAlert(BaseModel):
@@ -132,8 +175,11 @@ class JobAlert(BaseModel):
 
     job: JobPosting
     match: JobMatch
-    tailored: TailoredResume | None = None
+    tailored: TailoredResume | None = None  # the changes made in this cycle (created / adapted)
     application: SavedApplication | None = None
+    resume_origin: ResumeOrigin | None = None
+    source_version: ResumeVersion | None = None  # version reused or adapted
+    reuse_rationale: str | None = None
 
 
 class MatchRecord(BaseModel):
@@ -146,6 +192,7 @@ class MatchRecord(BaseModel):
     score: int
     verdict: str
     tailored: bool
+    resume_origin: str | None = None
     resume_dir: str | None = None
 
 
@@ -155,4 +202,6 @@ class CycleReport(BaseModel):
     scored: int = 0
     notified: int = 0
     tailored: int = 0
+    adapted: int = 0
+    reused: int = 0
     errors: list[str] = Field(default_factory=list)

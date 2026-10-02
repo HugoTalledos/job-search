@@ -16,6 +16,8 @@ from ..domain.models import (
     MatchRecord,
     Profile,
     RepoEvidence,
+    ResumeVersion,
+    ReuseDecision,
     RepoRef,
     SavedApplication,
     SearchCriteria,
@@ -62,7 +64,23 @@ class JobMatcher(Protocol):
 
 
 class ResumeTailor(Protocol):
-    def tailor(self, job: JobPosting, match: JobMatch, profile: Profile, resume_text: str) -> TailoredResume: ...
+    def tailor(
+        self,
+        job: JobPosting,
+        match: JobMatch,
+        profile: Profile,
+        resume_text: str,
+        starting_from: str | None = None,
+    ) -> TailoredResume:
+        """Tailor the base resume to ``job``. With ``starting_from`` (an existing tailored version derived
+        from the same base), make the smallest changes that make it fit the new posting."""
+        ...
+
+
+class ResumeSelector(Protocol):
+    """Decides whether a stored tailored resume can serve a new posting."""
+
+    def choose(self, job: JobPosting, match: JobMatch, candidates: list[ResumeVersion]) -> ReuseDecision: ...
 
 
 # --- Job market ---------------------------------------------------------------------------------
@@ -82,9 +100,24 @@ class JobSource(Protocol):
 
 
 class ApplicationStore(Protocol):
-    """Persists tailored resumes (rendered) for a posting."""
+    """Catalogue of tailored resumes: persist (rendered), list, load and track reuse."""
 
-    def save(self, job: JobPosting, match: JobMatch, tailored: TailoredResume) -> SavedApplication: ...
+    def save(
+        self,
+        job: JobPosting,
+        match: JobMatch,
+        tailored: TailoredResume,
+        base_fingerprint: str,
+        adapted_from: str | None = None,
+    ) -> SavedApplication: ...
+
+    def list_versions(self) -> list[ResumeVersion]: ...
+
+    def load_markdown(self, version_id: str) -> str: ...
+
+    def locate(self, version_id: str) -> SavedApplication: ...
+
+    def record_use(self, version_id: str, job: JobPosting) -> None: ...
 
 
 class Notifier(Protocol):

@@ -40,3 +40,18 @@ def test_profile_freshness(profile):
     assert profile_is_current(stored, fp, now, refresh_days=7)
     assert not profile_is_current(stored, fp, now, refresh_days=2)
     assert not profile_is_current(stored, profile_fingerprint("cv2", []), now, refresh_days=7)
+
+
+def test_reuse_policy_only_offers_versions_of_current_base(profile):
+    from job_agent.domain.models import ResumeVersion
+    from job_agent.domain.policies import ReusePolicy, resume_fingerprint
+
+    def v(i, fp, day):
+        return ResumeVersion(id=f"v{i}", job_key="k", job_title="t", company="c", language="es", highlights=[],
+                             base_fingerprint=fp, created_at=datetime(2026, 9, day, tzinfo=timezone.utc))
+
+    current = resume_fingerprint("cv")
+    assert current == resume_fingerprint("cv\n") != resume_fingerprint("cv v2")
+    versions = [v(1, current, 1), v(2, "old", 2), v(3, current, 3), v(4, current, 2)]
+    assert [x.id for x in ReusePolicy(max_candidates=2).candidates(versions, current)] == ["v3", "v4"]
+    assert ReusePolicy(enabled=False).candidates(versions, current) == []

@@ -29,11 +29,24 @@ def format_message(alert: JobAlert) -> str:
     ]
     if match.gaps:
         lines += ["", "<b>Brechas</b>", *[f"• {e(g)}" for g in match.gaps[:4]]]
-    if tailored:
-        lines += ["", "<b>📝 Hoja de vida ajustada</b>", e(tailored.summary_for_candidate)]
+    link = [f'<a href="{e(resume_link, quote=True)}">Ver versión en el repositorio</a>'] if resume_link else []
+    source = alert.source_version
+    source_desc = f"{e(source.job_title)} — {e(source.company)} ({source.created_at:%Y-%m-%d})" if source else ""
+    if alert.resume_origin == "reused" and source:
+        lines += ["", "<b>♻️ Hoja de vida reutilizada</b>", f"Usé la versión creada para {source_desc}; ya cubre esta oferta."]
+        if alert.reuse_rationale:
+            lines.append(f"<i>{e(alert.reuse_rationale)}</i>")
+        lines += link
+    elif tailored:
+        title = "📝 Hoja de vida adaptada" if alert.resume_origin == "adapted" else "📝 Hoja de vida ajustada"
+        lines += ["", f"<b>{title}</b>"]
+        if alert.resume_origin == "adapted" and source:
+            lines.append(f"Partí de la versión creada para {source_desc}.")
+        lines.append(e(tailored.summary_for_candidate))
         lines += [f"• <i>{e(c.section)}</i>: {e(c.change)}" for c in tailored.changes[:8]]
-        if resume_link:
-            lines.append(f'<a href="{e(resume_link, quote=True)}">Ver versión en el repositorio</a>')
+        lines += link
+    elif match.resume_undersells:
+        lines += ["", "Tu hoja de vida podría reforzarse para esta oferta, pero no se generó una versión ajustada."]
     else:
         lines += ["", "Tu hoja de vida actual ya cubre bien esta oferta; no se modificó."]
     text = "\n".join(lines)

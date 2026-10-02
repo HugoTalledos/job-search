@@ -33,6 +33,8 @@ def match():
 def tailored():
     return TailoredResume(
         resume_markdown="# Test\n\n## Resumen\nBackend dev",
+        language="es",
+        highlights=["Python", "AWS"],
         changes=[ResumeChange(section="Resumen", change="Enfocado a backend", rationale="La oferta pide Python")],
         summary_for_candidate="Se reescribió el resumen.",
     )

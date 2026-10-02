@@ -1,7 +1,8 @@
-"""Driven adapters backed by Claude: profile inference, job matching, resume tailoring."""
+"""Driven adapters backed by Claude: profile inference, job matching, resume tailoring and reuse."""
 
 from .claude_job_matcher import ClaudeJobMatcher
 from .claude_profile_inferer import ClaudeProfileInferer
+from .claude_resume_selector import ClaudeResumeSelector
 from .claude_resume_tailor import ClaudeResumeTailor
 
-__all__ = ["ClaudeJobMatcher", "ClaudeProfileInferer", "ClaudeResumeTailor"]
+__all__ = ["ClaudeJobMatcher", "ClaudeProfileInferer", "ClaudeResumeSelector", "ClaudeResumeTailor"]
