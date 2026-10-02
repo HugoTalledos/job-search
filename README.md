@@ -2,8 +2,9 @@
 
 Agente que corre en tu Mac **3 veces al día**, busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
 y, cuando una oferta encaja pero tu hoja de vida no te hace justicia, **crea una versión ajustada
-de tu CV** para esa oferta. Después te envía una notificación por **Telegram** con la oferta, por qué
-encaja y qué cambió en el CV (con el PDF adjunto).
+de tu CV** para esa oferta. Después te envía una notificación por **Telegram** con un resumen de la oferta
+(cargo, empresa, lugar, fuente, afinidad, nivel de inglés y salario si la publicación los indica) y si la
+hoja de vida se reescribió, se reutilizó o no se pudo generar (con el PDF adjunto).
 
 ```
              ┌───────────────────── tu Mac (launchd 3×/día) ─────────────────────┐
@@ -15,7 +16,7 @@ repos git ─► │             (solo se rehace si cambian o pasan N días)    
              │ 4. Afinidad Claude: cada oferta que pasó vs perfil + CV       │
              │ 5. Ajuste   si encaja y el CV la "subvende" ──► CV a medida   │
              │             output/AAAA-MM-DD/<empresa>-<cargo>/resume.{md,pdf}│
-             │ 6. Aviso    Telegram: oferta + motivos + cambios + PDF         │
+             │ 6. Aviso    Telegram: resumen de la oferta + estado CV + PDF   │
              │ 7. Estado   data/ y output/ en tu Mac (nunca en el repositorio)  │
              └────────────────────────────────────────────────────────────────┘
 ```

@@ -27,7 +27,9 @@ relevant projects omitted, wrong emphasis). `tailoring_focus` must only contain 
 according to the profile or resume. Write reasons, gaps and focus in Spanish.
 The posting comes from a job board's page text: some fields may be empty. Copy the job title, hiring
 company and location exactly as the text states them into `posting_title`, `posting_company` and
-`posting_location` (empty string if absent)."""
+`posting_location` (empty string if absent). Also copy the English level the posting requires into
+`english_level` and the salary or salary range it states (with currency and period) into `salary_range`;
+use an empty string when the posting does not mention them - never guess."""
 
 SELECT_SYSTEM = """You manage a candidate's library of resumes already tailored to past job postings.
 For a new posting, decide whether one of them can be sent as is, adapted, or whether a new one is needed.

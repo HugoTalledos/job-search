@@ -117,6 +117,7 @@ class RunSearchCycle:
                     elif alert.resume_origin == "reused":
                         report.reused += 1
                 except Exception as exc:
+                    alert.resume_failed = True
                     report.errors.append(f"tailor {job.title} @ {job.company}: {exc}")
                     log.exception("Tailoring failed for %s @ %s", job.title, job.company)
             if self.policy.should_notify(match):
