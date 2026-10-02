@@ -15,13 +15,14 @@ log = logging.getLogger(__name__)
 def create_app(load_jobs: LoadCollectedJobs, api_key: str) -> FastAPI:
     if not api_key.strip():
         raise ValueError("JOB_AGENT_WEBHOOK_API_KEY no está configurada")
+    expected_key = api_key.encode("utf-8")
 
     app = FastAPI()
 
     @app.post("/webhooks/inference")
     def start_inference(request: Request) -> Response:
-        supplied_key = request.headers.get("X-API-Key", "")
-        if not hmac.compare_digest(supplied_key, api_key):
+        supplied_key = request.headers.get("X-API-Key", "").encode("latin-1")
+        if not hmac.compare_digest(supplied_key, expected_key):
             return Response(status_code=401)
 
         try:

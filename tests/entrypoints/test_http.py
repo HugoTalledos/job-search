@@ -66,3 +66,25 @@ def test_read_failure_returns_500_without_sensitive_details():
 def test_service_rejects_blank_configured_api_key():
     with pytest.raises(ValueError, match="JOB_AGENT_WEBHOOK_API_KEY"):
         create_app(Reader(), " ")
+
+
+def test_non_ascii_header_is_unauthorized_without_read():
+    reader = Reader()
+
+    response = TestClient(create_app(reader, "secret-key")).post(
+        "/webhooks/inference", headers={b"X-API-Key": b"\xff"}
+    )
+
+    assert response.status_code == 401
+    assert reader.calls == 0
+
+
+def test_utf8_api_key_authenticates():
+    reader = Reader()
+
+    response = TestClient(create_app(reader, "contraseña")).post(
+        "/webhooks/inference", headers={b"X-API-Key": "contraseña".encode("utf-8")}
+    )
+
+    assert response.status_code == 200
+    assert reader.calls == 1
