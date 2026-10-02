@@ -43,7 +43,8 @@ def test_seen_repository_forgets_only_postings_not_seen_for_a_while(tmp_path, jo
 def test_profile_store_roundtrip(tmp_path, profile):
     store = JsonProfileStore(tmp_path / "p.json")
     assert store.load() is None
-    stored = StoredProfile(profile=profile, fingerprint="f", built_at=datetime.now(timezone.utc))
+    stored = StoredProfile(profile=profile, resume_fingerprint="f", repos_fingerprint="r",
+                           built_at=datetime.now(timezone.utc))
     store.save(stored)
     assert store.load() == stored
 

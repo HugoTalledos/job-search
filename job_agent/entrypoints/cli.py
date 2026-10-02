@@ -17,6 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     run_p = sub.add_parser("run", help="Search, match, tailor and notify (one cycle)")
     run_p.add_argument("--dry-run", action="store_true", help="Log notifications instead of sending them")
+    run_p.add_argument("--refresh-profile", action="store_true", help="Rebuild the profile before searching")
     prof_p = sub.add_parser("profile", help="(Re)build the candidate profile and print it")
     prof_p.add_argument("--force", action="store_true")
     sub.add_parser("test-notify", help="Send a test notification")
@@ -43,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error de configuración: {exc}", file=sys.stderr)
         return 2
     if args.command == "run":
-        report = container.run_search_cycle.execute()
+        report = container.run_search_cycle.execute(refresh_profile=args.refresh_profile)
         for error in report.errors:
             print(f"error: {error}", file=sys.stderr)
     elif args.command == "profile":

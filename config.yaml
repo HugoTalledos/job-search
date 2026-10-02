@@ -13,8 +13,12 @@ repositories: []               # repos adicionales en cualquier remoto git, p. e
 #  - url: https://github.com/HugoTalledos/otro-repo.git
 #    branch: main
 
-# Re-inferir el perfil como máximo cada N días (también se rehace si cambian el CV o los repos).
-profile_refresh_days: 7
+# Perfil (inferido por el LLM a partir de tu hoja de vida y tus repos; es la llamada más costosa):
+# - si cambias resume/base.md se rehace en la siguiente corrida;
+# - si solo cambian tus repos, se rehace como máximo cada profile_refresh_days días;
+# - si nada cambió, no se rehace nunca.
+# Para forzarlo:  .venv/bin/python -m job_agent profile --force   o   run --refresh-profile
+profile_refresh_days: 30
 
 search:
   # 1) Plan de búsqueda (determinista): palabras clave × ubicaciones.

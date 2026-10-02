@@ -109,7 +109,7 @@ class Config(BaseModel):
     resume_reuse: ResumeReuseConfig = Field(default_factory=ResumeReuseConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    profile_refresh_days: int = 7
+    profile_refresh_days: int = 30
     language: str = "es"
 
     @property

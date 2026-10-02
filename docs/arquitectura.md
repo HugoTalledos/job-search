@@ -121,9 +121,9 @@ sequenceDiagram
     Note over RSC,EP: 1. Perfil
     RSC->>EP: execute()
     EP->>Store: leer CV base y heads de los repos
-    alt CV y repos sin cambios y perfil vigente
+    alt mismo CV y repos sin revisar o sin cambios
         Store-->>EP: perfil guardado
-    else algo cambió o el perfil es viejo
+    else CV cambió, o repos cambiaron y pasaron N días
         EP->>LLM: inferir perfil (CV + evidencia de repos)
         LLM-->>EP: Profile
         EP->>Store: guardar data/profile.json
@@ -198,8 +198,9 @@ sequenceDiagram
 
 Notas:
 
-- El perfil (pasos 3 a 9) solo se recalcula con Claude cuando cambió tu CV, cambió algún repo o el
-  perfil tiene más de `profile_refresh_days` días.
+- El perfil (pasos 3 a 9) solo se recalcula con el LLM si cambió tu CV (de inmediato) o si cambiaron tus
+  repos y pasaron `profile_refresh_days` días (30 por defecto). Mientras tanto ni siquiera se consulta
+  GitHub. Se fuerza con `profile --force` o `run --refresh-profile`.
 - Una oferta ya procesada (puntuada o descartada por un filtro) nunca se vuelve a descargar: su id se
   rechaza antes de pedir el detalle. Su fecha de "última vista" se renueva cada vez que aparece, y solo
   se olvida tras 90 días sin aparecer en ninguna búsqueda.

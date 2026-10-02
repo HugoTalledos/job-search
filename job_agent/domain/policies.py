@@ -191,15 +191,40 @@ class MatchingPolicy:
 # --- Profile and resume versions --------------------------------------------------------------------
 
 
-def profile_fingerprint(resume_text: str, repo_heads: list[str]) -> str:
-    h = hashlib.sha256(resume_text.encode())
+def repos_fingerprint(repo_heads: list[str]) -> str:
+    """Identifies the state of the candidate's repositories (url + latest commit of each)."""
+    h = hashlib.sha256()
     for head in sorted(repo_heads):
         h.update(head.encode())
-    return h.hexdigest()
+    return h.hexdigest()[:16]
 
 
-def profile_is_current(stored: StoredProfile, fingerprint: str, now: datetime, refresh_days: int) -> bool:
-    return stored.fingerprint == fingerprint and now - stored.built_at < timedelta(days=refresh_days)
+@dataclass(frozen=True)
+class ProfileRefreshPolicy:
+    """When the (LLM-inferred, token-costly) profile must be rebuilt.
+
+    - The base resume changed: right away; it is the main source and rarely changes.
+    - Repositories changed: at most every ``refresh_days`` (commits happen all the time).
+    - Nothing changed: never. A rebuild can always be forced by hand.
+    """
+
+    refresh_days: int = 30
+
+    def repos_check_due(self, stored: StoredProfile, now: datetime) -> bool:
+        last_check = stored.repos_checked_at or stored.built_at
+        return now - last_check >= timedelta(days=self.refresh_days)
+
+    def rebuild_reason(
+        self, stored: StoredProfile | None, resume_fp: str, repos_fp: str | None, now: datetime
+    ) -> str | None:
+        """Why the profile must be rebuilt, or None. ``repos_fp`` is None when repos were not checked."""
+        if stored is None:
+            return "no hay perfil guardado"
+        if stored.resume_fingerprint != resume_fp:
+            return "la hoja de vida base cambió"
+        if repos_fp is not None and stored.repos_fingerprint != repos_fp and self.repos_check_due(stored, now):
+            return f"los repositorios cambiaron y pasaron {self.refresh_days} días o más"
+        return None
 
 
 def resume_fingerprint(resume_text: str) -> str:

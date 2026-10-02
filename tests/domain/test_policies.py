@@ -5,8 +5,6 @@ from job_agent.domain.policies import (
     MatchingPolicy,
     SearchPreferences,
     job_key,
-    profile_fingerprint,
-    profile_is_current,
 )
 
 
@@ -64,14 +62,23 @@ def test_job_filter(job):
     assert f.rejection(ok.model_copy(update={"description": " "}), now) == "sin_descripcion"
 
 
-def test_profile_freshness(profile):
-    now = datetime.now(timezone.utc)
-    fp = profile_fingerprint("cv", ["a1", "b2"])
-    assert fp == profile_fingerprint("cv", ["b2", "a1"])
-    stored = StoredProfile(profile=profile, fingerprint=fp, built_at=now - timedelta(days=3))
-    assert profile_is_current(stored, fp, now, refresh_days=7)
-    assert not profile_is_current(stored, fp, now, refresh_days=2)
-    assert not profile_is_current(stored, profile_fingerprint("cv2", []), now, refresh_days=7)
+def test_profile_refresh_policy(profile):
+    from job_agent.domain.policies import ProfileRefreshPolicy, repos_fingerprint, resume_fingerprint
+
+    now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    assert repos_fingerprint(["a1", "b2"]) == repos_fingerprint(["b2", "a1"]) != repos_fingerprint(["a1"])
+    policy = ProfileRefreshPolicy(refresh_days=30)
+    stored = StoredProfile(profile=profile, resume_fingerprint=resume_fingerprint("cv"), repos_fingerprint="r1",
+                           built_at=now - timedelta(days=10))
+    assert policy.rebuild_reason(None, "x", None, now) == "no hay perfil guardado"
+    assert policy.rebuild_reason(stored, resume_fingerprint("cv"), "r1", now) is None
+    assert "hoja de vida" in policy.rebuild_reason(stored, resume_fingerprint("cv2"), "r1", now)
+    assert policy.rebuild_reason(stored, resume_fingerprint("cv"), "r2", now) is None  # repos changed, too soon
+    old = stored.model_copy(update={"built_at": now - timedelta(days=30)})
+    assert "repositorios" in policy.rebuild_reason(old, resume_fingerprint("cv"), "r2", now)
+    assert policy.rebuild_reason(old, resume_fingerprint("cv"), "r1", now) is None  # due, but nothing changed
+    checked = old.model_copy(update={"repos_checked_at": now - timedelta(days=1)})
+    assert not policy.repos_check_due(checked, now) and policy.repos_check_due(old, now)
 
 
 def test_reuse_policy_only_offers_versions_of_current_base(profile):

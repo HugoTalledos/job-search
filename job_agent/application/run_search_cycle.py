@@ -78,9 +78,9 @@ class RunSearchCycle:
         self.reuse = reuse or ReusePolicy()
         self.clock = clock
 
-    def execute(self) -> CycleReport:
+    def execute(self, refresh_profile: bool = False) -> CycleReport:
         report = CycleReport()
-        profile = self.ensure_profile.execute()
+        profile = self.ensure_profile.execute(force=refresh_profile)
         resume_text = self.resume.read()
         base_fp = resume_fingerprint(resume_text)
         plan = self.preferences.plan_for(profile)

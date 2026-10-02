@@ -17,9 +17,9 @@ sequenceDiagram
     Note over RSC,EP: 1. Perfil
     RSC->>EP: execute()
     EP->>Store: leer CV base y heads de los repos
-    alt CV y repos sin cambios y perfil vigente
+    alt mismo CV y repos sin revisar o sin cambios
         Store-->>EP: perfil guardado
-    else algo cambió o el perfil es viejo
+    else CV cambió, o repos cambiaron y pasaron N días
         EP->>LLM: inferir perfil (CV + evidencia de repos)
         LLM-->>EP: Profile
         EP->>Store: guardar data/profile.json

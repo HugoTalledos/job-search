@@ -122,8 +122,10 @@ class RepoEvidence(BaseModel):
 
 class StoredProfile(BaseModel):
     profile: Profile
-    fingerprint: str
+    resume_fingerprint: str = ""  # empty in files written by older versions -> treated as changed
+    repos_fingerprint: str = ""
     built_at: datetime
+    repos_checked_at: datetime | None = None  # last time repository changes were looked up
     repositories: list[RepoEvidence] = Field(default_factory=list)
 
 

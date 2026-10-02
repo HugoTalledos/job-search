@@ -36,8 +36,10 @@ class FakeRepositories:
     def __init__(self, heads: dict[str, str]):
         self.heads = heads
         self.collected = 0
+        self.listed = 0  # network calls in the real adapter (GitHub API + git ls-remote)
 
     def list_repositories(self):
+        self.listed += 1
         return [RepoRef(url=u) for u in self.heads]
 
     def head(self, repo):
