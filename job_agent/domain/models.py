@@ -170,6 +170,19 @@ class SourceCollection(BaseModel):
     detail_errors: list[str] = Field(default_factory=list)
 
 
+class CollectorPlan(BaseModel):
+    search: SearchPlan
+    max_details_per_run: int = Field(gt=0)
+
+
+class CollectionReport(BaseModel):
+    leads: int = 0
+    known: int = 0
+    fetched: int = 0
+    inserted: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class ResumeUse(BaseModel):
     job_key: str
     title: str
