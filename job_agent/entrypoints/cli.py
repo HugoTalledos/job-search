@@ -1,4 +1,4 @@
-"""CLI driving adapter: python -m job_agent {run,profile,test-notify}"""
+"""CLI driving adapter: local collection and the legacy all-in-one cycle."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import argparse
 import logging
 import sys
 
-from ..bootstrap import build_container, build_notifier
+from ..adapters.persistence.json_store import JsonProfileStore
+from ..bootstrap import build_collector, build_container, build_notifier, build_search_preferences
 from ..config import load_config, load_dotenv
+from ..domain.models import CollectorPlan
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     prof_p = sub.add_parser("profile", help="(Re)build the candidate profile and print it")
     prof_p.add_argument("--force", action="store_true")
     sub.add_parser("test-notify", help="Send a test notification")
+    sub.add_parser("collect", help="Collect new LinkedIn postings into Firestore")
+    sub.add_parser("seed-search-plan", help="Publish current search plan to Firestore")
     args = parser.parse_args(argv)
     load_dotenv()  # local runs keep their secrets in .env; in GitHub Actions they come from the environment
 
@@ -37,6 +41,34 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         send_text("✅ job-search agent: notificaciones configuradas correctamente.")
         return 0
+
+    if args.command in {"collect", "seed-search-plan"}:
+        try:
+            cfg = load_config(args.config)
+            if args.command == "seed-search-plan":
+                stored = JsonProfileStore(cfg.storage.data_path / "profile.json").load()
+                if stored is None:
+                    raise ValueError("No existe data/profile.json; crea el perfil antes de publicar el plan")
+            collector = build_collector(cfg)
+            if args.command == "collect":
+                report = collector.execute()
+                for error in report.errors:
+                    print(f"error: {error}", file=sys.stderr)
+                return 1 if report.errors else 0
+            plan = CollectorPlan(
+                search=build_search_preferences(cfg).plan_for(stored.profile),
+                max_details_per_run=cfg.search.max_details_per_run,
+            )
+            collector.store.save_plan(plan)
+            print(f"Plan publicado en Firestore: {len(plan.search.queries)} consultas")
+            return 0
+        except ValueError as exc:
+            print(f"Error de configuración: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            logging.exception("Collector command failed")
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     try:
         container = build_container(load_config(args.config), dry_run=getattr(args, "dry_run", False))

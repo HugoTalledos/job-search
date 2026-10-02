@@ -33,6 +33,9 @@ class FakeDocument:
             raise Conflict("already exists")
         self.client.docs[self.path] = data
 
+    def set(self, data):
+        self.client.docs[self.path] = data
+
 
 class FakeCollection:
     def __init__(self, client, name):
@@ -67,6 +70,20 @@ def test_firestore_loads_plan_from_settings_document():
 
     assert plan.search.queries[0].keywords == "backend"
     assert plan.max_details_per_run == 12
+
+
+def test_firestore_saves_plan_to_settings_document():
+    from job_agent.domain.models import CollectorPlan, SearchPlan, SearchQuery
+
+    client = FakeFirestore()
+    plan = CollectorPlan(search=SearchPlan(queries=[SearchQuery(keywords="backend")], posted_within_days=2),
+                         max_details_per_run=12)
+
+    FirestoreCollectorStore(client).save_plan(plan)
+
+    saved = client.docs["settings/search_plan"]
+    assert saved["search"]["queries"][0]["keywords"] == "backend"
+    assert saved["max_details_per_run"] == 12
 
 
 def test_firestore_checks_only_requested_lead_documents_in_one_batch():
