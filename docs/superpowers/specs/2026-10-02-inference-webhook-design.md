@@ -12,7 +12,7 @@ Se evaluaron dos formas de preparar el punto de entrada. La primera consulta Fir
 
 ## Componentes y datos
 
-- El adaptador HTTP de `job_agent/entrypoints` valida un token Bearer compartido, configurado mediante `JOB_AGENT_WEBHOOK_TOKEN`. El servicio no arranca si falta el token. Una credencial ausente o incorrecta recibe `401` y no consulta Firestore. El token no se registra en logs.
+- El adaptador HTTP de `job_agent/entrypoints` valida la API key enviada en el encabezado `X-API-Key`, configurada mediante `JOB_AGENT_WEBHOOK_API_KEY`. El servicio no arranca si falta la clave configurada. Una clave ausente o incorrecta recibe `401` y no consulta Firestore. La clave no se registra en logs.
 - Un caso de uso en `job_agent/application` solicita las ofertas a un puerto de solo lectura. No depende de HTTP, Firestore, LLM ni de `local_collector`.
 - Un adaptador de persistencia de `job_agent` lee `job_postings` con el SDK de Firestore y valida el campo `job` de cada documento con `job_contracts.JobPosting`. El identificador del documento puede acompañar al dato dentro del servicio para su uso futuro, pero no se devuelve al cliente. No se actualiza ninguna oferta.
 - La composición del servicio crea solo el cliente de Firestore y el caso de uso de lectura. No construye los modelos, el perfil, LinkedIn, Telegram ni el flujo anterior de `RunSearchCycle`.
