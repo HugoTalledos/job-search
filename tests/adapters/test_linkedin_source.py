@@ -7,13 +7,13 @@ from job_agent.application.ports import JobSource
 from job_agent.domain.models import SearchPlan, SearchQuery
 
 
-def _source(tmp_path):
+def _source(tmp_path, slow_id="", tool_timeout=200.0):
     log = tmp_path / "calls.jsonl"
     server = McpServerParams(
         name="linkedin", command=sys.executable, args=[str(Path(__file__).parent / "fake_jobs_mcp.py")],
-        env={"FAKE_MCP_LOG": str(log)},
+        env={"FAKE_MCP_LOG": str(log), "FAKE_MCP_SLOW_ID": slow_id},
     )
-    return LinkedInMcpJobSource(server, max_pages=1), log
+    return LinkedInMcpJobSource(server, max_pages=1, tool_timeout=tool_timeout), log
 
 
 def _calls(log):
@@ -57,3 +57,16 @@ def test_details_budget(tmp_path):
     plan = SearchPlan(queries=[SearchQuery(keywords="x", location="Colombia")], posted_within_days=3)
     assert len(source.collect(plan, lambda lead: True, max_details=1)) == 1
     assert [c["date_posted"] for c in _calls(log) if c["tool"] == "search_jobs"] == ["r259200"]
+
+
+def test_stuck_detail_is_skipped_after_timeout(tmp_path, caplog):
+    import time
+
+    source, log = _source(tmp_path, slow_id="101", tool_timeout=2)
+    plan = SearchPlan(queries=[SearchQuery(keywords="x", location="Colombia")], posted_within_days=1)
+    started = time.monotonic()
+    with caplog.at_level("INFO"):
+        postings = source.collect(plan, lambda lead: True, max_details=10)
+    assert [p.external_id for p in postings] == ["102"]  # 101 timed out, the run went on
+    assert time.monotonic() - started < 20
+    assert "detail 1/2 (101) failed" in caplog.text and "detail 2/2 in" in caplog.text

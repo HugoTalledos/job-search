@@ -46,7 +46,7 @@ class SearchConfig(BaseModel):
     exclude_companies: list[str] = Field(default_factory=list)
     exclude_title_keywords: list[str] = Field(default_factory=list)
     # Budgets
-    max_details_per_run: int = 40
+    max_details_per_run: int = 20
     max_jobs_per_run: int = 25
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
 

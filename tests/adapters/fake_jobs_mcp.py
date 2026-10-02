@@ -38,9 +38,13 @@ def search_jobs(keywords: str, location: str | None = None, max_pages: int = 3, 
 
 
 @server.tool()
-def get_job_details(job_id: str) -> dict:
+async def get_job_details(job_id: str) -> dict:
     """Get job details for a specific job posting on LinkedIn."""
     _log({"tool": "get_job_details", "job_id": job_id})
+    if job_id == os.environ.get("FAKE_MCP_SLOW_ID"):
+        import anyio
+
+        await anyio.sleep(30)  # a page that never finishes loading
     return {"url": f"https://www.linkedin.com/jobs/view/{job_id}/", "sections": {"job_posting": POSTINGS[job_id]}}
 
 

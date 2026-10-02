@@ -107,7 +107,7 @@ class SearchPreferences:
     posted_within_days: int = 1
     work_types: tuple[str, ...] = ()
     experience_levels: tuple[str, ...] = ()
-    max_details_per_run: int = 40
+    max_details_per_run: int = 20
     max_jobs_per_run: int = 25
 
     def plan_for(self, profile: Profile) -> SearchPlan:

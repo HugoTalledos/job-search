@@ -39,7 +39,7 @@ search:
   exclude_title_keywords: []     # p. ej. ["intern", "practicante", "lead"]
 
   # 4) Presupuestos por corrida.
-  max_details_per_run: 40        # ofertas nuevas cuyo detalle se descarga de LinkedIn
+  max_details_per_run: 20        # ofertas nuevas cuyo detalle se descarga de LinkedIn (~10-30 s cada una)
   max_jobs_per_run: 25           # ofertas que Claude evalúa (solo las que pasaron los filtros)
 
   sources:

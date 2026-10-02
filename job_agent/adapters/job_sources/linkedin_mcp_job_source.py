@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -51,9 +52,16 @@ class McpToolError(RuntimeError):
     pass
 
 
-async def call_tool(session: ClientSession, name: str, arguments: dict) -> dict:
+#: The LinkedIn server gives each tool call up to 180 s; slightly more here so a stuck page cannot hang the run.
+TOOL_TIMEOUT_SECONDS = 200.0
+
+
+async def call_tool(session: ClientSession, name: str, arguments: dict, timeout: float = TOOL_TIMEOUT_SECONDS) -> dict:
     """Call an MCP tool and return its JSON result (structured content, or the JSON text block)."""
-    result = await session.call_tool(name, arguments)
+    try:
+        result = await session.call_tool(name, arguments, read_timeout_seconds=timeout)
+    except Exception as exc:  # timeouts and transport errors: report like a tool error
+        raise McpToolError(f"{name} failed: {type(exc).__name__}: {exc}"[:300]) from exc
     text = "\n".join(getattr(block, "text", "") for block in result.content)
     if result.is_error:
         raise McpToolError(f"{name} failed: {text[:300]}")
@@ -76,9 +84,10 @@ def linkedin_date_filter(days: int) -> str:
 class LinkedInMcpJobSource:
     name = "linkedin"
 
-    def __init__(self, server: McpServerParams, max_pages: int = 2) -> None:
+    def __init__(self, server: McpServerParams, max_pages: int = 2, tool_timeout: float = TOOL_TIMEOUT_SECONDS) -> None:
         self.server = server
         self.max_pages = max_pages
+        self.tool_timeout = tool_timeout
 
     def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
         return asyncio.run(self._collect(plan, admit, max_details))
@@ -98,17 +107,24 @@ class LinkedInMcpJobSource:
             log.info("[linkedin] %d unique ids, %d new (details budget %d)", len(ids), len(admitted), max_details)
 
             postings = []
-            for lead in admitted:
+            started = time.monotonic()
+            for n, lead in enumerate(admitted, 1):
+                t0 = time.monotonic()
                 try:
-                    data = await call_tool(session, "get_job_details", {"job_id": lead.external_id})
+                    data = await call_tool(session, "get_job_details", {"job_id": lead.external_id}, self.tool_timeout)
                 except McpToolError as exc:
-                    log.warning("[linkedin] details for %s failed: %s", lead.external_id, exc)
+                    log.warning("[linkedin] detail %d/%d (%s) failed: %s", n, len(admitted), lead.external_id, exc)
                     continue
                 text = (data.get("sections") or {}).get("job_posting", "")
                 if not text:
-                    log.warning("[linkedin] job %s returned no text: %s", lead.external_id, data.get("section_errors"))
+                    log.warning("[linkedin] detail %d/%d (%s) returned no text: %s",
+                                n, len(admitted), lead.external_id, data.get("section_errors"))
                     continue
-                postings.append(parse_job_posting(lead.external_id, data.get("url") or lead.url, text))
+                posting = parse_job_posting(lead.external_id, data.get("url") or lead.url, text)
+                postings.append(posting)
+                log.info("[linkedin] detail %d/%d in %.0fs: %s @ %s", n, len(admitted), time.monotonic() - t0,
+                         posting.title or "?", posting.company or "?")
+            log.info("[linkedin] %d details fetched in %.0fs", len(postings), time.monotonic() - started)
             return postings
 
     async def _search(self, session: ClientSession, plan: SearchPlan) -> list[str]:
@@ -127,7 +143,7 @@ class LinkedInMcpJobSource:
             if plan.experience_levels:
                 args["experience_level"] = ",".join(plan.experience_levels)
             try:
-                data = await call_tool(session, "search_jobs", args)
+                data = await call_tool(session, "search_jobs", args, self.tool_timeout)
             except McpToolError as exc:  # one failing query must not stop the others
                 log.warning("[linkedin] search %r @ %r failed: %s", query.keywords, query.location, exc)
                 continue
