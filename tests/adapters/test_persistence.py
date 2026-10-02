@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -9,17 +9,34 @@ from job_agent.adapters.persistence import (
     JsonSeenJobsRepository,
 )
 from job_agent.domain.models import MatchRecord, StoredProfile
+from job_agent.domain.policies import job_key
 
 
 def test_seen_repository_roundtrip_and_repost_detection(tmp_path, job):
     repo = JsonSeenJobsRepository(tmp_path / "state.json")
-    assert not repo.is_seen(job)
-    repo.mark(job, 80)
+    assert not repo.is_seen_key(job_key(job))
+    repo.mark(job, outcome="puntuada", score=80)
     repo.commit()
     reloaded = JsonSeenJobsRepository(tmp_path / "state.json")
-    assert reloaded.is_seen(job)
-    assert reloaded.is_seen(job.model_copy(update={"external_id": "999", "url": "https://x/999"}))
-    assert reloaded.seen_urls() == [job.url]
+    assert reloaded.is_seen_key(job_key(job))
+    assert reloaded.seen[job_key(job)]["outcome"] == "puntuada"
+    assert not reloaded.is_duplicate(job)  # same id is not "another id"
+    repost = job.model_copy(update={"external_id": "999", "url": "https://x/999", "company": "ACME & Co."})
+    assert reloaded.is_duplicate(repost)
+
+
+def test_seen_repository_forgets_only_postings_not_seen_for_a_while(tmp_path, job):
+    path = tmp_path / "state.json"
+    repo = JsonSeenJobsRepository(path, retention_days=30)
+    old = job.model_copy(update={"external_id": "old", "url": "https://x/old"})
+    repo.mark(job, outcome="puntuada")
+    repo.mark(old, outcome="puntuada")
+    long_ago = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    for entry in repo.seen.values():
+        entry["first_seen"] = entry["last_seen"] = long_ago
+    assert repo.is_seen_key(job_key(job))  # still showing up in searches -> last_seen refreshed
+    repo.commit()
+    assert set(JsonSeenJobsRepository(path).seen) == {job_key(job)}
 
 
 def test_profile_store_roundtrip(tmp_path, profile):

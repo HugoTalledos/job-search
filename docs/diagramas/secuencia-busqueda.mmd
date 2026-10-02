@@ -1,25 +1,38 @@
 sequenceDiagram
     autonumber
     participant RSC as RunSearchCycle
-    participant MJS as McpJobSource
-    participant MCP as Servidor MCP (LinkedIn)
-    participant Agent as claude_search_agent
-    participant Claude as API de Anthropic
+    participant Seen as Ofertas vistas (data/state.json)
+    participant LI as LinkedInMcpJobSource
+    participant MCP as Servidor MCP de LinkedIn
+    participant Claude as Claude (JobMatcher)
 
-    RSC->>MJS: search(criteria)
-    MJS->>MCP: lanzar por stdio e initialize()
-    MJS->>MCP: list_tools()
-    MCP-->>MJS: search_jobs, get_job_details, ...
-    MJS->>Agent: run(herramientas MCP + submit_jobs, criteria)
-    loop hasta que Claude llame submit_jobs (máx. 40 turnos)
-        Agent->>Claude: mensajes + herramientas
-        Claude-->>Agent: tool_use (p. ej. search_jobs "python backend", "Remote")
-        Agent->>MCP: call_tool(...)
-        MCP-->>Agent: resultados de LinkedIn
-        Agent->>Claude: tool_result
+    RSC->>RSC: plan = (extra_keywords + cargos + keywords del perfil) × ubicaciones
+    RSC->>LI: collect(plan, admit, max_details_per_run)
+    LI->>MCP: lanzar por stdio e initialize()
+    loop cada consulta del plan (máx. max_queries)
+        LI->>MCP: search_jobs(keywords, location, date_posted, work_type, experience_level, sort_by=date)
+        MCP-->>LI: job_ids
     end
-    Claude-->>Agent: tool_use submit_jobs(jobs)
-    Agent->>Agent: validar cada JobPosting
-    Agent-->>MJS: lista de ofertas
-    MJS->>MCP: cerrar sesión
-    MJS-->>RSC: ofertas
+    LI->>LI: unir ids sin repetir (orden: más recientes primero)
+    loop cada id, hasta agotar el presupuesto de detalles
+        LI->>RSC: admit(linkedin:id)
+        RSC->>Seen: ¿id conocido? (y renueva su fecha de última vista)
+        alt ya procesado o repetido en esta corrida
+            RSC-->>LI: no (no se pide el detalle)
+        else nuevo
+            RSC-->>LI: sí
+        end
+    end
+    loop cada id admitido
+        LI->>MCP: get_job_details(job_id)
+        MCP-->>LI: texto de la oferta
+        LI->>LI: parsear empresa, cargo, ubicación, antigüedad, modalidad, descripción
+    end
+    LI->>MCP: cerrar sesión
+    LI-->>RSC: ofertas nuevas
+    RSC->>RSC: JobFilter + duplicados por empresa y cargo normalizados
+    RSC->>Seen: guardar descartadas con su motivo
+    loop cada candidata (máx. max_jobs_per_run)
+        RSC->>Claude: score(oferta, perfil, CV)
+        Claude-->>RSC: JobMatch
+    end

@@ -26,7 +26,8 @@ def profile():
 @pytest.fixture
 def match():
     return JobMatch(score=82, verdict="good", reasons=["Python avanzado"], gaps=["Kubernetes"],
-                    resume_undersells=True, tailoring_focus=["Destacar AWS"])
+                    resume_undersells=True, tailoring_focus=["Destacar AWS"],
+                    posting_title="Backend Engineer", posting_company="Acme", posting_location="Bogotá")
 
 
 @pytest.fixture

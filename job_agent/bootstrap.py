@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 from .adapters.code_repositories import GitRepositoryReader
-from .adapters.job_sources import McpJobSource, McpServerParams, WebSearchJobSource
+from .adapters.job_sources import LinkedInMcpJobSource, McpServerParams
 from .adapters.llm import ClaudeJobMatcher, ClaudeProfileInferer, ClaudeResumeSelector, ClaudeResumeTailor
 from .adapters.notifications import ConsoleNotifier, TelegramNotifier
 from .adapters.persistence import (
@@ -20,7 +20,7 @@ from .application import EnsureProfile, RunSearchCycle
 from .application.ports import JobSource, Notifier
 from .config import ROOT, Config
 from .domain.models import RepoRef
-from .domain.policies import MatchingPolicy, ReusePolicy, SearchPreferences
+from .domain.policies import JobFilter, MatchingPolicy, ReusePolicy, SearchPreferences
 
 
 @dataclass
@@ -31,13 +31,11 @@ class Container:
 
 
 def build_job_sources(cfg: Config) -> list[JobSource]:
-    sources: list[JobSource] = [
-        McpJobSource(McpServerParams(name=s.name, command=s.command, args=s.args, env=s.env))
-        for s in cfg.search.mcp_servers
-        if s.enabled
-    ]
-    if cfg.search.web_search:
-        sources.append(WebSearchJobSource(cfg.search.web_search_domains))
+    sources: list[JobSource] = []
+    linkedin = cfg.search.sources.linkedin
+    if linkedin.enabled:
+        server = McpServerParams(name="linkedin", command=linkedin.command, args=linkedin.args, env=linkedin.env)
+        sources.append(LinkedInMcpJobSource(server, max_pages=linkedin.max_pages))
     return sources
 
 
@@ -84,9 +82,19 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
         preferences=SearchPreferences(
             locations=tuple(cfg.search.locations),
             extra_keywords=tuple(cfg.search.extra_keywords),
-            exclude_companies=tuple(cfg.search.exclude_companies),
+            max_roles_from_profile=cfg.search.max_roles_from_profile,
+            max_queries=cfg.search.max_queries,
             posted_within_days=cfg.search.posted_within_days,
+            work_types=tuple(cfg.search.work_types),
+            experience_levels=tuple(cfg.search.experience_levels),
+            max_details_per_run=cfg.search.max_details_per_run,
             max_jobs_per_run=cfg.search.max_jobs_per_run,
+        ),
+        job_filter=JobFilter(
+            exclude_companies=tuple(cfg.search.exclude_companies),
+            exclude_title_keywords=tuple(cfg.search.exclude_title_keywords),
+            posted_within_days=cfg.search.posted_within_days,
+            work_types=tuple(cfg.search.work_types),
         ),
         policy=MatchingPolicy(cfg.matching.min_score_to_notify, cfg.matching.min_score_to_tailor),
         reuse=ReusePolicy(cfg.resume_reuse.enabled, cfg.resume_reuse.max_candidates),

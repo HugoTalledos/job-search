@@ -66,6 +66,11 @@ class JobMatch(BaseModel):
     tailoring_focus: list[str] = Field(
         description="Concrete, truthful things to emphasise in a tailored resume (empty if none)"
     )
+    # Display-only: copied from the posting text so notifications read well when the source's text could
+    # not be parsed. Filtering never relies on these.
+    posting_title: str = Field(description="Job title exactly as written in the posting")
+    posting_company: str = Field(description="Hiring company exactly as written in the posting")
+    posting_location: str = Field(description="Location as written in the posting, or empty string")
 
 
 class ResumeChange(BaseModel):
@@ -122,18 +127,28 @@ class StoredProfile(BaseModel):
     repositories: list[RepoEvidence] = Field(default_factory=list)
 
 
-class SearchCriteria(BaseModel):
-    """What a job source must look for in one cycle."""
+class SearchQuery(BaseModel):
+    """One deterministic query sent to a job source."""
 
-    target_roles: list[str]
-    keywords: list[str]
-    seniority: str
-    top_skills: list[str]
-    locations: list[str]
+    keywords: str
+    location: str | None = None
+
+
+class SearchPlan(BaseModel):
+    """Queries plus the filters every source applies natively (when it supports them)."""
+
+    queries: list[SearchQuery]
     posted_within_days: int
-    max_results: int
-    exclude_companies: list[str]
-    already_seen_urls: list[str]
+    work_types: list[str] = Field(default_factory=list)  # remote, hybrid, on_site
+    experience_levels: list[str] = Field(default_factory=list)  # internship, entry, associate, mid_senior...
+
+
+class JobLead(BaseModel):
+    """A posting identifier returned by a search, before its details are fetched."""
+
+    source: str
+    external_id: str
+    url: str = ""
 
 
 class ResumeUse(BaseModel):
@@ -197,8 +212,11 @@ class MatchRecord(BaseModel):
 
 
 class CycleReport(BaseModel):
-    found: int = 0
-    new: int = 0
+    leads: int = 0  # ids returned by the searches
+    known_leads: int = 0  # discarded before fetching details (already seen or repeated in this run)
+    fetched: int = 0  # details fetched
+    filtered: dict[str, int] = Field(default_factory=dict)  # deterministic filter -> postings discarded
+    candidates: int = 0  # passed every deterministic filter (sent to Claude, up to max_jobs_per_run)
     scored: int = 0
     notified: int = 0
     tailored: int = 0

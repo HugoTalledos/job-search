@@ -7,10 +7,12 @@ only through one of these protocols. Adapters in ``job_agent.adapters`` implemen
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from ..domain.models import (
     JobAlert,
+    JobLead,
     JobMatch,
     JobPosting,
     MatchRecord,
@@ -20,7 +22,7 @@ from ..domain.models import (
     ReuseDecision,
     RepoRef,
     SavedApplication,
-    SearchCriteria,
+    SearchPlan,
     StoredProfile,
     TailoredResume,
 )
@@ -88,12 +90,17 @@ class ResumeSelector(Protocol):
 
 @runtime_checkable
 class JobSource(Protocol):
-    """A place to find postings: a LinkedIn MCP server, another job-board MCP server, web search..."""
+    """A job board queried deterministically (no LLM): LinkedIn via its MCP server, a job-board API...
+
+    ``collect`` runs every query of the plan, asks ``admit`` about each id it finds (the application
+    rejects ids already processed or repeated, before any details are fetched) and fetches the details of
+    at most ``max_details`` admitted ids.
+    """
 
     @property
     def name(self) -> str: ...
 
-    def search(self, criteria: SearchCriteria) -> list[JobPosting]: ...
+    def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]: ...
 
 
 # --- Outputs -----------------------------------------------------------------------------------
@@ -125,11 +132,17 @@ class Notifier(Protocol):
 
 
 class SeenJobsRepository(Protocol):
-    def is_seen(self, job: JobPosting) -> bool: ...
+    """Postings already processed (scored or discarded by a filter)."""
 
-    def seen_urls(self) -> list[str]: ...
+    def is_seen_key(self, key: str) -> bool:
+        """Known id; also refreshes its last-seen date so postings still online are not forgotten."""
+        ...
 
-    def mark(self, job: JobPosting, score: int | None) -> None: ...
+    def is_duplicate(self, job: JobPosting) -> bool:
+        """Same company + role (normalised) as a processed posting, under another id or source."""
+        ...
+
+    def mark(self, job: JobPosting, outcome: str, score: int | None = None) -> None: ...
 
     def commit(self) -> None:
         """Flush pending changes to durable storage."""

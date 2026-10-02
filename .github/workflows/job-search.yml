@@ -27,7 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # Latest head of the branch, not the commit that triggered the run: a run queued behind another
+      # must see the data/state.json the previous one pushed, or it would notify the same postings again.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -73,8 +77,13 @@ jobs:
           git add data output
           if git diff --cached --quiet; then
             echo "Sin cambios"
-          else
-            git commit -m "chore(job-search): resultados $(date -u +%Y-%m-%dT%H:%MZ)"
-            git pull --rebase --autostash
-            git push
+            exit 0
           fi
+          git commit -m "chore(job-search): resultados $(date -u +%Y-%m-%dT%H:%MZ)"
+          for attempt in 1 2 3 4; do
+            git pull --rebase -X theirs && git push && exit 0
+            echo "Push falló (intento $attempt); reintentando..."
+            sleep $((attempt * 5))
+          done
+          echo "::error::No se pudo guardar el estado; la próxima corrida podría repetir notificaciones"
+          exit 1

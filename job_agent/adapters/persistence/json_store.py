@@ -38,7 +38,11 @@ class JsonProfileStore:
 
 
 class JsonSeenJobsRepository:
-    """SeenJobsRepository port: ``data/state.json`` with a retention window."""
+    """SeenJobsRepository port: ``data/state.json``.
+
+    An entry is forgotten only after ``retention_days`` without the posting showing up in any search, so
+    postings that stay online for months are never notified twice.
+    """
 
     def __init__(self, path: Path, retention_days: int = 90) -> None:
         self.path = path
@@ -47,30 +51,42 @@ class JsonSeenJobsRepository:
         if path.exists():
             self.seen = json.loads(path.read_text()).get("seen", {})
 
-    def is_seen(self, job: JobPosting) -> bool:
-        if job_key(job) in self.seen:
-            return True
-        dup = duplicate_signature(job)
-        return any(v.get("dup") == dup for v in self.seen.values())
+    def is_seen_key(self, key: str) -> bool:
+        entry = self.seen.get(key)
+        if entry is not None:
+            entry["last_seen"] = _now()
+        return entry is not None
 
-    def seen_urls(self) -> list[str]:
-        return [v["url"] for v in self.seen.values() if v.get("url")]
+    def is_duplicate(self, job: JobPosting) -> bool:
+        signature, key = duplicate_signature(job), job_key(job)
+        return bool(signature) and any(k != key and v.get("dup") == signature for k, v in self.seen.items())
 
-    def mark(self, job: JobPosting, score: int | None) -> None:
+    def mark(self, job: JobPosting, outcome: str, score: int | None = None) -> None:
+        now = _now()
+        previous = self.seen.get(job_key(job), {})
         self.seen[job_key(job)] = {
-            "first_seen": datetime.now(timezone.utc).isoformat(),
+            "first_seen": previous.get("first_seen", now),
+            "last_seen": now,
             "title": job.title,
             "company": job.company,
             "url": job.url,
             "dup": duplicate_signature(job),
+            "outcome": outcome,
             "score": score,
         }
 
     def commit(self) -> None:
         cutoff = datetime.now(timezone.utc) - self.retention
-        self.seen = {k: v for k, v in self.seen.items() if datetime.fromisoformat(v["first_seen"]) >= cutoff}
+        self.seen = {
+            k: v for k, v in self.seen.items()
+            if datetime.fromisoformat(v.get("last_seen") or v["first_seen"]) >= cutoff
+        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({"seen": self.seen}, indent=1, ensure_ascii=False))
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class JsonlMatchHistory:

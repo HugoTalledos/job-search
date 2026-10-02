@@ -14,7 +14,10 @@ Judge the CANDIDATE (profile, which includes evidence from their code repositori
 Set `resume_undersells` to true only when the candidate genuinely fits but the resume as written would
 likely be filtered out or fail to show the relevant evidence (missing keywords for skills they have,
 relevant projects omitted, wrong emphasis). `tailoring_focus` must only contain things that are true
-according to the profile or resume. Write reasons, gaps and focus in Spanish."""
+according to the profile or resume. Write reasons, gaps and focus in Spanish.
+The posting comes from a job board's page text: some fields may be empty. Copy the job title, hiring
+company and location exactly as the text states them into `posting_title`, `posting_company` and
+`posting_location` (empty string if absent)."""
 
 
 class ClaudeJobMatcher:

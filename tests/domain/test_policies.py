@@ -24,12 +24,44 @@ def test_matching_policy(match):
     assert not policy.should_notify(match.model_copy(update={"score": 50}))
 
 
-def test_search_preferences_build_criteria(profile, job):
-    prefs = SearchPreferences(locations=("Colombia",), extra_keywords=("django",), exclude_companies=("ACME & co",))
-    criteria = prefs.criteria_for(profile, ["u1"])
-    assert criteria.keywords == ["python backend", "django"]
-    assert criteria.locations == ["Colombia"] and criteria.already_seen_urls == ["u1"]
-    assert prefs.is_excluded(job.model_copy(update={"company": " acme & co "}))
+def test_search_plan_is_keywords_by_location(profile):
+    prefs = SearchPreferences(locations=("Colombia", "Remote"), extra_keywords=("Django", "backend engineer"), max_queries=5)
+    plan = prefs.plan_for(profile)
+    assert [(q.keywords, q.location) for q in plan.queries] == [
+        ("Django", "Colombia"), ("Django", "Remote"),
+        ("backend engineer", "Colombia"), ("backend engineer", "Remote"),  # duplicates "Backend Engineer" role
+        ("python backend", "Colombia"),
+    ]
+    assert plan.posted_within_days == 1
+
+
+def test_normalisation_and_duplicate_signature(job):
+    from job_agent.domain.policies import duplicate_signature, normalize_company, normalize_title
+
+    assert normalize_company("Globant S.A.S.") == normalize_company("GLOBANT") == "globant"
+    assert normalize_title("Sr. Backend Engineer (Remote)") == "senior back end engineer"
+    a = job.model_copy(update={"title": "Desarrollador Backend Sr", "company": "Acme Inc."})
+    b = job.model_copy(update={"title": "Sr. Backend Developer - Remoto", "company": "ACME"})
+    assert duplicate_signature(a) == duplicate_signature(b)
+    assert duplicate_signature(job.model_copy(update={"company": ""})) == ""  # unknown: never a duplicate
+
+
+def test_job_filter(job):
+    from job_agent.domain.policies import JobFilter
+
+    now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    f = JobFilter(exclude_companies=("acme & co",), exclude_title_keywords=("Intern", "lead"),
+                  posted_within_days=1, work_types=("remote", "hybrid"))
+    ok = job.model_copy(update={"company": "Globex", "posted_at": "2026-10-01T10:00:00+00:00"})
+    assert f.rejection(ok, now) is None
+    assert f.rejection(ok.model_copy(update={"company": "ACME & Co."}), now) == "empresa_excluida"
+    assert f.rejection(ok.model_copy(update={"title": "Backend Intern"}), now) == "palabra_excluida_en_titulo"
+    assert f.rejection(ok.model_copy(update={"title": "Leadership Coach"}), now) is None  # whole words only
+    assert f.rejection(ok.model_copy(update={"remote": "onsite"}), now) == "modalidad_no_deseada"
+    assert f.rejection(ok.model_copy(update={"remote": "unknown"}), now) is None
+    assert f.rejection(ok.model_copy(update={"posted_at": "2026-09-20T00:00:00+00:00"}), now) == "publicacion_antigua"
+    assert f.rejection(ok.model_copy(update={"posted_at": ""}), now) is None
+    assert f.rejection(ok.model_copy(update={"description": " "}), now) == "sin_descripcion"
 
 
 def test_profile_freshness(profile):

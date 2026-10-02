@@ -2,6 +2,9 @@
 
 Fuentes de los diagramas: `docs/diagramas/*.mmd` (Mermaid). También hay versiones PNG en la misma carpeta.
 
+Principio: **primero lo determinista, Claude al final**. La búsqueda y todos los filtros son código
+(sin LLM); Claude solo evalúa el encaje de las ofertas que sobreviven y, cuando hace falta, la hoja de vida.
+
 ## Diagrama de componentes
 
 Arquitectura hexagonal: los casos de uso (`application/`) y el dominio (`domain/`) solo conocen los
@@ -24,7 +27,7 @@ flowchart LR
         subgraph DOM["domain/"]
             direction TB
             MOD["models<br/>Profile · JobPosting · JobMatch<br/>TailoredResume · ResumeVersion"]
-            POL["policies<br/>MatchingPolicy · ReusePolicy<br/>SearchPreferences · job_key"]
+            POL["policies (deterministas)<br/>SearchPreferences → plan · JobFilter<br/>job_key · duplicate_signature<br/>MatchingPolicy · ReusePolicy"]
         end
     end
 
@@ -40,7 +43,7 @@ flowchart LR
     subgraph ADAPTERS["adapters/ · adaptadores de salida"]
         direction TB
         A_CAND["resume/FileResumeSource<br/>code_repositories/GitRepositoryReader"]
-        A_JOB["job_sources/ McpJobSource (uno por servidor)<br/>WebSearchJobSource<br/>→ claude_search_agent"]
+        A_JOB["job_sources/ LinkedInMcpJobSource<br/>llama search_jobs y get_job_details<br/>+ parser de texto (sin LLM)"]
         A_LLM["llm/ ClaudeProfileInferer · ClaudeJobMatcher<br/>ClaudeResumeSelector · ClaudeResumeTailor"]
         A_STO["persistence/ JSON y archivos<br/>+ resume/markdown_renderer (MD→HTML→PDF)"]
         A_NOT["notifications/ TelegramNotifier<br/>ConsoleNotifier (dry-run)"]
@@ -49,7 +52,7 @@ flowchart LR
     subgraph EXT["Sistemas externos"]
         direction TB
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
-        E_JOB["Servidor MCP de LinkedIn<br/>(+ otros MCP, búsqueda web)"]
+        E_JOB["Servidor MCP de LinkedIn"]
         E_LLM["API de Anthropic (Claude)"]
         E_STO[("Repo: data/ · output/")]
         E_NOT["Telegram"]
@@ -72,7 +75,6 @@ flowchart LR
     A_CAND --> E_CAND
     A_LLM --> E_LLM
     A_JOB --> E_JOB
-    A_JOB -- el agente razona con --> E_LLM
     A_STO --> E_STO
     A_NOT --> E_NOT
 ```
@@ -82,7 +84,7 @@ flowchart LR
 | `ResumeSource` | leer tu CV base | `FileResumeSource` (`resume/base.md`, .txt o .pdf) |
 | `CodeRepositoryReader` | listar repos y extraer evidencia | `GitRepositoryReader` (GitHub + cualquier remoto git) |
 | `ProfileInferer` | inferir el perfil | `ClaudeProfileInferer` |
-| `JobSource` | buscar ofertas | `McpJobSource` (uno por servidor MCP), `WebSearchJobSource` |
+| `JobSource` | buscar ofertas (determinista) | `LinkedInMcpJobSource` (herramientas del servidor MCP llamadas directamente) |
 | `JobMatcher` | puntuar cada oferta | `ClaudeJobMatcher` |
 | `ResumeSelector` | decidir reutilizar / adaptar / crear | `ClaudeResumeSelector` |
 | `ResumeTailor` | crear o adaptar la hoja de vida | `ClaudeResumeTailor` |
@@ -104,7 +106,7 @@ sequenceDiagram
     participant RSC as RunSearchCycle
     participant EP as EnsureProfile
     participant Store as Persistencia (data/, output/)
-    participant Src as JobSource (LinkedIn MCP, web)
+    participant Src as JobSource (LinkedIn vía MCP)
     participant LLM as Claude (matcher, selector, tailor)
     participant Notif as Notifier (Telegram)
     actor User as Tú
@@ -127,26 +129,39 @@ sequenceDiagram
     end
 
     rect rgba(127,127,127,0.08)
-    Note over RSC,Src: 2. Búsqueda
-    RSC->>Store: URLs ya vistas
-    RSC->>RSC: armar SearchCriteria (roles, keywords, ubicaciones)
+    Note over RSC,Src: 2. Búsqueda determinista (sin LLM)
+    RSC->>RSC: plan = palabras clave × ubicaciones
     loop cada fuente configurada
-        RSC->>Src: search(criteria)
-        Src-->>RSC: ofertas (o error, sin detener las demás)
+        RSC->>Src: collect(plan, admit, presupuesto)
+        Src->>Src: search_jobs por consulta (filtros de LinkedIn: fecha, modalidad, nivel)
+        loop cada id encontrado
+            Src->>RSC: admit(id)
+            RSC->>Store: ¿id ya procesado?
+            RSC-->>Src: sí: se descarta sin pedir detalle / no: se admite
+        end
+        Src->>Src: get_job_details solo de los admitidos y parseo del texto
+        Src-->>RSC: ofertas nuevas (o error, sin detener las demás)
     end
-    RSC->>RSC: quitar duplicadas, vistas y empresas excluidas
     end
 
-    loop cada oferta nueva (máx. max_jobs_per_run)
+    rect rgba(127,127,127,0.08)
+    Note over RSC,Store: 3. Filtros deterministas
+    RSC->>RSC: empresa excluida, palabra excluida en el título, modalidad, antigüedad, sin descripción
+    RSC->>Store: ¿misma empresa + cargo ya procesado con otro id?
+    RSC->>RSC: duplicadas dentro de la corrida
+    RSC->>Store: marcar descartadas (con el motivo) para no volver a pedirlas
+    end
+
+    loop cada oferta que pasó los filtros (máx. max_jobs_per_run)
         rect rgba(127,127,127,0.08)
-        Note over RSC,LLM: 3. Afinidad
+        Note over RSC,LLM: 4. Afinidad (único juicio de Claude sobre la oferta)
         RSC->>LLM: score(oferta, perfil, CV)
         LLM-->>RSC: JobMatch (puntaje, motivos, brechas, resume_undersells)
         end
 
         opt puntaje ≥ umbral y el CV no te hace justicia
             rect rgba(127,127,127,0.08)
-            Note over RSC,Store: 4. Hoja de vida
+            Note over RSC,Store: 5. Hoja de vida
             RSC->>Store: versiones del catálogo (mismo CV base)
             alt hay versiones candidatas
                 RSC->>LLM: choose(oferta, candidatas)
@@ -171,7 +186,7 @@ sequenceDiagram
             RSC->>Notif: notify(alerta)
             Notif->>User: mensaje + PDF por Telegram
         end
-        RSC->>Store: marcar como vista, historial (matches.jsonl)
+        RSC->>Store: marcar como puntuada, historial (matches.jsonl)
     end
 
     RSC-->>CLI: CycleReport
@@ -181,42 +196,72 @@ sequenceDiagram
 
 Notas:
 
-- Los pasos 3 a 9 solo llaman a Claude cuando cambió tu CV, cambió algún repo o el perfil tiene más
-  de `profile_refresh_days` días.
-- Si una fuente falla (paso 13), el error queda en el reporte y las demás fuentes siguen.
-- Una oferta se marca como vista solo si se pudo puntuar; si falla el puntaje, se reintenta en el
-  siguiente ciclo.
-- Si falla la generación de la hoja de vida, igual se envía la notificación, indicando que no se generó.
+- El perfil (pasos 3 a 9) solo se recalcula con Claude cuando cambió tu CV, cambió algún repo o el
+  perfil tiene más de `profile_refresh_days` días.
+- Una oferta ya procesada (puntuada o descartada por un filtro) nunca se vuelve a descargar: su id se
+  rechaza antes de pedir el detalle. Su fecha de "última vista" se renueva cada vez que aparece, y solo
+  se olvida tras 90 días sin aparecer en ninguna búsqueda.
+- Los presupuestos (`max_details_per_run`, `max_jobs_per_run`) se aplican **después** de descartar lo
+  conocido, así que las ofertas repetidas no ocupan cupo.
+- Si falla una fuente, una consulta o el detalle de una oferta, se registra y el resto continúa. Una
+  oferta que no se pudo puntuar no se marca, y se reintenta en la siguiente corrida.
 
-## Diagrama de secuencia: búsqueda en una fuente MCP (LinkedIn)
+## Diagrama de secuencia: búsqueda en LinkedIn
 
-Detalle del paso 12 para `McpJobSource`. `WebSearchJobSource` sigue el mismo bucle, pero la
-herramienta es la búsqueda web que se ejecuta en los servidores de Anthropic.
+Detalle de la búsqueda determinista con `LinkedInMcpJobSource`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant RSC as RunSearchCycle
-    participant MJS as McpJobSource
-    participant MCP as Servidor MCP (LinkedIn)
-    participant Agent as claude_search_agent
-    participant Claude as API de Anthropic
+    participant Seen as Ofertas vistas (data/state.json)
+    participant LI as LinkedInMcpJobSource
+    participant MCP as Servidor MCP de LinkedIn
+    participant Claude as Claude (JobMatcher)
 
-    RSC->>MJS: search(criteria)
-    MJS->>MCP: lanzar por stdio e initialize()
-    MJS->>MCP: list_tools()
-    MCP-->>MJS: search_jobs, get_job_details, ...
-    MJS->>Agent: run(herramientas MCP + submit_jobs, criteria)
-    loop hasta que Claude llame submit_jobs (máx. 40 turnos)
-        Agent->>Claude: mensajes + herramientas
-        Claude-->>Agent: tool_use (p. ej. search_jobs "python backend", "Remote")
-        Agent->>MCP: call_tool(...)
-        MCP-->>Agent: resultados de LinkedIn
-        Agent->>Claude: tool_result
+    RSC->>RSC: plan = (extra_keywords + cargos + keywords del perfil) × ubicaciones
+    RSC->>LI: collect(plan, admit, max_details_per_run)
+    LI->>MCP: lanzar por stdio e initialize()
+    loop cada consulta del plan (máx. max_queries)
+        LI->>MCP: search_jobs(keywords, location, date_posted, work_type, experience_level, sort_by=date)
+        MCP-->>LI: job_ids
     end
-    Claude-->>Agent: tool_use submit_jobs(jobs)
-    Agent->>Agent: validar cada JobPosting
-    Agent-->>MJS: lista de ofertas
-    MJS->>MCP: cerrar sesión
-    MJS-->>RSC: ofertas
+    LI->>LI: unir ids sin repetir (orden: más recientes primero)
+    loop cada id, hasta agotar el presupuesto de detalles
+        LI->>RSC: admit(linkedin:id)
+        RSC->>Seen: ¿id conocido? (y renueva su fecha de última vista)
+        alt ya procesado o repetido en esta corrida
+            RSC-->>LI: no (no se pide el detalle)
+        else nuevo
+            RSC-->>LI: sí
+        end
+    end
+    loop cada id admitido
+        LI->>MCP: get_job_details(job_id)
+        MCP-->>LI: texto de la oferta
+        LI->>LI: parsear empresa, cargo, ubicación, antigüedad, modalidad, descripción
+    end
+    LI->>MCP: cerrar sesión
+    LI-->>RSC: ofertas nuevas
+    RSC->>RSC: JobFilter + duplicados por empresa y cargo normalizados
+    RSC->>Seen: guardar descartadas con su motivo
+    loop cada candidata (máx. max_jobs_per_run)
+        RSC->>Claude: score(oferta, perfil, CV)
+        Claude-->>RSC: JobMatch
+    end
 ```
+
+### Filtros, en orden
+
+| Etapa | Dónde | Regla |
+|---|---|---|
+| 1 | LinkedIn (`search_jobs`) | antigüedad (`posted_within_days`), modalidad (`work_types`), nivel (`experience_levels`), orden por fecha |
+| 2 | Agente, antes de pedir detalle | id ya procesado en corridas anteriores o repetido en esta corrida |
+| 3 | Agente, sobre el detalle (`JobFilter`) | empresa excluida (normalizada: "Acme Inc." = "ACME"), palabra excluida en el título (palabra completa), modalidad no deseada, publicación antigua, sin descripción |
+| 4 | Agente, sobre el detalle | misma empresa + cargo normalizados que otra oferta de esta corrida o ya procesada con otro id (reposts) |
+| 5 | Claude | encaje con tu perfil: puntaje 0-100 |
+
+El texto de cada oferta se convierte en campos con un parser determinista
+(`adapters/job_sources/linkedin_text.py`). Si no reconoce el formato, deja vacíos título, empresa o
+ubicación: esos filtros no se aplican a esa oferta (no se descarta por falta de datos) y, para mostrarla
+en la notificación, se usa lo que Claude leyó en el texto al puntuarla.

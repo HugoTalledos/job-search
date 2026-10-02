@@ -10,13 +10,13 @@ encaja y qué cambió en el CV (con el PDF adjunto).
 resume/      │                                                                │
 base.md ───► │ 1. Perfil   CV + repos git ──Claude──► data/profile.json       │
 repos git ─► │             (solo se rehace si cambian o pasan N días)        │
-             │ 2. Búsqueda agente Claude + herramientas MCP (LinkedIn, …)     │
-             │             + búsqueda web opcional ──► ofertas nuevas         │
-             │ 3. Afinidad cada oferta vs perfil + CV ──► score 0-100        │
-             │ 4. Ajuste   si encaja y el CV la "subvende" ──► CV a medida   │
+             │ 2. Búsqueda LinkedIn vía MCP, sin LLM ──► ids de ofertas      │
+             │ 3. Filtros  deterministas: vistas, duplicadas, exclusiones    │
+             │ 4. Afinidad Claude: cada oferta que pasó vs perfil + CV       │
+             │ 5. Ajuste   si encaja y el CV la "subvende" ──► CV a medida   │
              │             output/AAAA-MM-DD/<empresa>-<cargo>/resume.{md,pdf}│
-             │ 5. Aviso    Telegram: oferta + motivos + cambios + PDF         │
-             │ 6. Estado   data/state.json, data/matches.jsonl → commit       │
+             │ 6. Aviso    Telegram: oferta + motivos + cambios + PDF         │
+             │ 7. Estado   data/state.json, data/matches.jsonl → commit       │
              └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -25,8 +25,8 @@ repos git ─► │             (solo se rehace si cambian o pasan N días)    
 | Paso | Caso de uso / puerto | Detalle |
 |---|---|---|
 | Perfil | `EnsureProfile` · `ResumeSource`, `CodeRepositoryReader`, `ProfileInferer`, `ProfileStore` | Clona (superficialmente) tus repos de GitHub — o cualquier remoto git — y extrae lenguajes, árbol, README y manifiestos. Claude infiere roles objetivo, seniority, habilidades con evidencia y lo que tus repos demuestran pero tu CV no menciona. Se persiste en `data/profile.json` con una huella del CV + commits; solo se recalcula si algo cambia o cada `profile_refresh_days`. |
-| Búsqueda | `RunSearchCycle` · `JobSource` (uno por fuente) | Cada servidor MCP de `config.yaml` (LinkedIn de entrada) es un `JobSource` independiente: un agente Claude recibe las herramientas de ese servidor, busca con tus roles/palabras clave/ubicaciones y entrega ofertas validadas mediante `submit_jobs`. La búsqueda web de Anthropic es otro `JobSource`. Si una fuente falla, las demás siguen. |
-| Afinidad | `JobMatcher` | Puntaje 0-100, motivos, brechas y `resume_undersells` (encajas, pero tu CV actual no lo muestra). |
+| Búsqueda y filtros | `RunSearchCycle` · `JobSource`, `SeenJobsRepository` · `JobFilter` | **Sin LLM.** El agente arma las consultas (palabras clave × ubicaciones) y llama directamente a `search_jobs` del servidor MCP de LinkedIn con sus filtros nativos (fecha, modalidad, nivel). Los ids ya procesados se descartan antes de descargar el detalle; luego se aplican los filtros deterministas (empresas y palabras excluidas, modalidad, antigüedad, duplicados por empresa + cargo normalizados). Detalle en [docs/arquitectura.md](docs/arquitectura.md#filtros-en-orden). |
+| Afinidad | `JobMatcher` | **Único juicio de Claude sobre la oferta**, solo para las que pasaron los filtros. Puntaje 0-100, motivos, brechas y `resume_undersells` (encajas, pero tu CV actual no lo muestra). |
 | CV a medida | `ResumeSelector`, `ResumeTailor`, `ApplicationStore` | Antes de escribir un CV nuevo revisa el catálogo de versiones ya ajustadas (ver [Reutilización](#reutilización-de-hojas-de-vida)): reutiliza, adapta la más parecida o crea una nueva. Al crear o adaptar, reescribe resumen, orden y viñetas con el vocabulario de la oferta y agrega proyectos de tus repos. **Regla dura: solo usa hechos de tu CV o de tus repos**; nunca inventa empresas, fechas, títulos ni métricas. Cada cambio queda justificado en `README.md` dentro de la carpeta de la versión. |
 | Aviso | `Notifier` | Telegram (mensaje + PDF). Con `--dry-run` o sin credenciales, se usa el notificador de consola. |
 | Estado | `SeenJobsRepository`, `MatchHistory` | Evita repetir ofertas (por id, url o empresa+cargo para reposts). Historial en `data/matches.jsonl`. |
@@ -70,8 +70,8 @@ archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con q
                 └─────────┬──────────┘                  │   ClaudeJobMatcher               │
                           │                             │   ClaudeResumeTailor / Selector  │
               ┌───────────▼───────────────┐  puertos    │ job_sources/                      │
-              │ application/              │◄───────────►│   McpJobSource  (LinkedIn, …)     │
-              │   EnsureProfile           │ (ports.py)  │   WebSearchJobSource              │
+              │ application/              │◄───────────►│   LinkedInMcpJobSource (sin LLM)  │
+              │   EnsureProfile           │ (ports.py)  │                                   │
               │   RunSearchCycle          │             │ code_repositories/                │
               │ ┌───────────────────────┐ │             │   GitRepositoryReader (GitHub, …) │
               │ │ domain/               │ │             │ resume/   FileResumeSource        │
@@ -148,22 +148,16 @@ pytest                                  # tests (no requieren API key)
 
 ## Agregar más fuentes
 
-Cualquier servidor MCP de empleo funciona sin escribir código: cada entrada se convierte en un
-`McpJobSource` y el agente descubre sus herramientas solo. Para fuentes que no son MCP, implementa
-el puerto `JobSource` (ver arriba).
+Las fuentes son deterministas: no usan Claude para buscar. Para agregar otra bolsa de empleo (otra API,
+otro servidor MCP), implementa el puerto `JobSource` en `adapters/job_sources/`:
 
-```yaml
-search:
-  mcp_servers:
-    - name: linkedin
-      command: uvx
-      args: ["mcp-server-linkedin@latest"]
-    - name: mi-portal
-      command: npx
-      args: ["-y", "algún-mcp-de-empleos"]
-      env: { API_KEY: "${MI_PORTAL_API_KEY}" }   # pásalo como secret en el workflow
-  web_search: true                               # búsqueda web restringida a web_search_domains
-```
+1. Ejecuta las consultas del `SearchPlan` contra la fuente (aplicando sus filtros nativos si los tiene).
+2. Llama a `admit(JobLead(...))` por cada id encontrado y pide el detalle solo de los admitidos, hasta
+   `max_details`.
+3. Devuelve `JobPosting` con los campos que la fuente provea.
+
+Luego regístrala en `bootstrap.py` y agrega su sección en `search.sources` de `config.yaml`. Los filtros
+deterministas, la deduplicación y el puntaje de Claude se aplican igual a todas las fuentes.
 
 ## Notas
 

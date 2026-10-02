@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from job_agent.domain.models import (
     JobAlert,
+    JobLead,
     JobMatch,
     JobPosting,
     MatchRecord,
@@ -16,11 +17,11 @@ from job_agent.domain.models import (
     ResumeVersion,
     ReuseDecision,
     SavedApplication,
-    SearchCriteria,
+    SearchPlan,
     StoredProfile,
     TailoredResume,
 )
-from job_agent.domain.policies import job_key
+from job_agent.domain.policies import duplicate_signature, job_key
 
 
 class FakeResume:
@@ -79,17 +80,27 @@ class StaticProfile:
 
 
 class FakeSource:
+    """Returns fixed postings, asking ``admit`` about each one like a real source does with its ids."""
+
     def __init__(self, name, jobs=None, error=None):
         self.name = name
         self.jobs = jobs or []
         self.error = error
-        self.criteria: SearchCriteria | None = None
+        self.plan: SearchPlan | None = None
+        self.fetched: list[JobPosting] = []
 
-    def search(self, criteria):
-        self.criteria = criteria
+    def collect(self, plan, admit, max_details):
+        self.plan = plan
         if self.error:
             raise self.error
-        return list(self.jobs)
+        out = []
+        for job in self.jobs:
+            if len(out) >= max_details:
+                break
+            if admit(JobLead(source=job.source, external_id=job.external_id, url=job.url)):
+                out.append(job)
+        self.fetched += out
+        return out
 
 
 class TableMatcher:
@@ -167,17 +178,18 @@ class RecordingNotifier:
 
 class MemorySeen:
     def __init__(self):
-        self.seen: dict[str, JobPosting] = {}
+        self.seen: dict[str, tuple[JobPosting, str]] = {}
         self.commits = 0
 
-    def is_seen(self, job):
-        return job_key(job) in self.seen
+    def is_seen_key(self, key):
+        return key in self.seen
 
-    def seen_urls(self):
-        return [j.url for j in self.seen.values()]
+    def is_duplicate(self, job):
+        sig = duplicate_signature(job)
+        return bool(sig) and any(k != job_key(job) and duplicate_signature(j) == sig for k, (j, _) in self.seen.items())
 
-    def mark(self, job, score):
-        self.seen[job_key(job)] = job
+    def mark(self, job, outcome, score=None):
+        self.seen[job_key(job)] = (job, outcome)
 
     def commit(self):
         self.commits += 1

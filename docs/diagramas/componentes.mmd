@@ -13,7 +13,7 @@ flowchart LR
         subgraph DOM["domain/"]
             direction TB
             MOD["models<br/>Profile · JobPosting · JobMatch<br/>TailoredResume · ResumeVersion"]
-            POL["policies<br/>MatchingPolicy · ReusePolicy<br/>SearchPreferences · job_key"]
+            POL["policies (deterministas)<br/>SearchPreferences → plan · JobFilter<br/>job_key · duplicate_signature<br/>MatchingPolicy · ReusePolicy"]
         end
     end
 
@@ -29,7 +29,7 @@ flowchart LR
     subgraph ADAPTERS["adapters/ · adaptadores de salida"]
         direction TB
         A_CAND["resume/FileResumeSource<br/>code_repositories/GitRepositoryReader"]
-        A_JOB["job_sources/ McpJobSource (uno por servidor)<br/>WebSearchJobSource<br/>→ claude_search_agent"]
+        A_JOB["job_sources/ LinkedInMcpJobSource<br/>llama search_jobs y get_job_details<br/>+ parser de texto (sin LLM)"]
         A_LLM["llm/ ClaudeProfileInferer · ClaudeJobMatcher<br/>ClaudeResumeSelector · ClaudeResumeTailor"]
         A_STO["persistence/ JSON y archivos<br/>+ resume/markdown_renderer (MD→HTML→PDF)"]
         A_NOT["notifications/ TelegramNotifier<br/>ConsoleNotifier (dry-run)"]
@@ -38,7 +38,7 @@ flowchart LR
     subgraph EXT["Sistemas externos"]
         direction TB
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
-        E_JOB["Servidor MCP de LinkedIn<br/>(+ otros MCP, búsqueda web)"]
+        E_JOB["Servidor MCP de LinkedIn"]
         E_LLM["API de Anthropic (Claude)"]
         E_STO[("Repo: data/ · output/")]
         E_NOT["Telegram"]
@@ -61,6 +61,5 @@ flowchart LR
     A_CAND --> E_CAND
     A_LLM --> E_LLM
     A_JOB --> E_JOB
-    A_JOB -- el agente razona con --> E_LLM
     A_STO --> E_STO
     A_NOT --> E_NOT

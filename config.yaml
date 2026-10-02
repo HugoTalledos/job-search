@@ -17,27 +17,35 @@ repositories: []               # repos adicionales en cualquier remoto git, p. e
 profile_refresh_days: 7
 
 search:
+  # 1) Plan de búsqueda (determinista): palabras clave × ubicaciones.
+  #    Palabras clave = extra_keywords + los primeros cargos objetivo de tu perfil + sus keywords.
   locations: ["Remote", "Colombia"]
   extra_keywords: []
-  exclude_companies: []
-  posted_within_days: 2
-  max_jobs_per_run: 25
+  max_roles_from_profile: 3
+  max_queries: 8                 # máximo de búsquedas por corrida (cada una es una búsqueda en LinkedIn)
 
-  # Búsqueda web de Anthropic como fuente adicional (sin MCP). Restringe a portales de empleo.
-  web_search: false
-  web_search_domains: [linkedin.com, computrabajo.com, getonbrd.com, weworkremotely.com, remoteok.com]
+  # 2) Filtros que aplica LinkedIn en la propia búsqueda.
+  posted_within_days: 1          # con 3 corridas al día, 1 día da solapamiento suficiente
+  work_types: []                 # remote, hybrid, on_site  (vacío = cualquiera)
+  experience_levels: []          # internship, entry, associate, mid_senior, director, executive
 
-  # Fuentes MCP. Cualquier servidor MCP de empleo se agrega aquí: el agente usa todas sus herramientas.
-  mcp_servers:
-    - name: linkedin
+  # 3) Filtros deterministas del agente, antes de llamar a Claude.
+  #    (además: ids ya vistos, duplicados por empresa+cargo normalizados, publicaciones antiguas)
+  exclude_companies: []          # se comparan normalizados: "Acme Inc." = "ACME"
+  exclude_title_keywords: []     # p. ej. ["intern", "practicante", "lead"]
+
+  # 4) Presupuestos por corrida.
+  max_details_per_run: 40        # ofertas nuevas cuyo detalle se descarga de LinkedIn
+  max_jobs_per_run: 25           # ofertas que Claude evalúa (solo las que pasaron los filtros)
+
+  sources:
+    linkedin:
+      enabled: true
       command: uvx
       args: ["mcp-server-linkedin@latest"]
       env:
         UV_HTTP_TIMEOUT: "300"
-    # - name: otra-fuente
-    #   command: npx
-    #   args: ["-y", "some-jobs-mcp-server"]
-    #   env: { API_KEY: "${SOME_JOBS_API_KEY}" }
+      max_pages: 2               # páginas de resultados por búsqueda (1-10)
 
 matching:
   min_score_to_notify: 70   # notificar ofertas con afinidad >= 70/100

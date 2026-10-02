@@ -1,0 +1,139 @@
+"""JobSource port for LinkedIn through its MCP server (stickerdaniel/linkedin-mcp-server), without any LLM.
+
+The adapter calls the server's tools directly:
+- ``search_jobs`` for every query of the plan, with LinkedIn's own filters (date posted, work type,
+  experience level, sorted by date) -> job ids;
+- ``get_job_details`` only for ids the application admits (not processed before), up to the budget.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from collections.abc import Callable
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
+
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
+
+from ...domain.models import JobLead, JobPosting, SearchPlan
+from .linkedin_text import parse_job_posting
+
+log = logging.getLogger(__name__)
+
+_INHERITED_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR", "XDG_CACHE_HOME", "UV_CACHE_DIR",
+                  "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+
+
+@dataclass(frozen=True)
+class McpServerParams:
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+
+    def stdio(self) -> StdioServerParameters:
+        inherited = {k: v for k, v in os.environ.items() if k in _INHERITED_ENV}
+        return StdioServerParameters(command=self.command, args=self.args, env={**inherited, **self.env})
+
+
+async def open_mcp_session(stack: AsyncExitStack, server: McpServerParams) -> ClientSession:
+    read, write = await stack.enter_async_context(stdio_client(server.stdio()))
+    session = await stack.enter_async_context(ClientSession(read, write))
+    await session.initialize()
+    return session
+
+
+class McpToolError(RuntimeError):
+    pass
+
+
+async def call_tool(session: ClientSession, name: str, arguments: dict) -> dict:
+    """Call an MCP tool and return its JSON result (structured content, or the JSON text block)."""
+    result = await session.call_tool(name, arguments)
+    text = "\n".join(getattr(block, "text", "") for block in result.content)
+    if result.is_error:
+        raise McpToolError(f"{name} failed: {text[:300]}")
+    data = result.structured_content
+    if data is None:
+        try:
+            data = json.loads(text) if text else {}
+        except json.JSONDecodeError as exc:
+            raise McpToolError(f"{name} returned non-JSON content") from exc
+    if isinstance(data, dict) and set(data) == {"result"}:
+        data = data["result"]
+    return data if isinstance(data, dict) else {}
+
+
+def linkedin_date_filter(days: int) -> str:
+    """LinkedIn's f_TPR value (seconds), accepted as-is by the server's ``date_posted``."""
+    return f"r{max(1, days) * 86400}"
+
+
+class LinkedInMcpJobSource:
+    name = "linkedin"
+
+    def __init__(self, server: McpServerParams, max_pages: int = 2) -> None:
+        self.server = server
+        self.max_pages = max_pages
+
+    def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
+        return asyncio.run(self._collect(plan, admit, max_details))
+
+    async def _collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
+        async with AsyncExitStack() as stack:
+            session = await open_mcp_session(stack, self.server)
+            ids = await self._search(session, plan)
+
+            admitted: list[JobLead] = []
+            for job_id in ids:
+                if len(admitted) >= max_details:
+                    break
+                lead = JobLead(source=self.name, external_id=job_id, url=f"https://www.linkedin.com/jobs/view/{job_id}/")
+                if admit(lead):
+                    admitted.append(lead)
+            log.info("[linkedin] %d unique ids, %d new (details budget %d)", len(ids), len(admitted), max_details)
+
+            postings = []
+            for lead in admitted:
+                try:
+                    data = await call_tool(session, "get_job_details", {"job_id": lead.external_id})
+                except McpToolError as exc:
+                    log.warning("[linkedin] details for %s failed: %s", lead.external_id, exc)
+                    continue
+                text = (data.get("sections") or {}).get("job_posting", "")
+                if not text:
+                    log.warning("[linkedin] job %s returned no text: %s", lead.external_id, data.get("section_errors"))
+                    continue
+                postings.append(parse_job_posting(lead.external_id, data.get("url") or lead.url, text))
+            return postings
+
+    async def _search(self, session: ClientSession, plan: SearchPlan) -> list[str]:
+        ids: dict[str, None] = {}  # ordered set: newest first within each query
+        for query in plan.queries:
+            args: dict = {
+                "keywords": query.keywords,
+                "max_pages": self.max_pages,
+                "sort_by": "date",
+                "date_posted": linkedin_date_filter(plan.posted_within_days),
+            }
+            if query.location:
+                args["location"] = query.location
+            if plan.work_types:
+                args["work_type"] = ",".join(plan.work_types)
+            if plan.experience_levels:
+                args["experience_level"] = ",".join(plan.experience_levels)
+            try:
+                data = await call_tool(session, "search_jobs", args)
+            except McpToolError as exc:  # one failing query must not stop the others
+                log.warning("[linkedin] search %r @ %r failed: %s", query.keywords, query.location, exc)
+                continue
+            found = [str(i) for i in data.get("job_ids") or []]
+            if errors := data.get("section_errors"):
+                log.info("[linkedin] %r @ %r: %s", query.keywords, query.location, errors)
+            log.info("[linkedin] %r @ %r -> %d ids", query.keywords, query.location, len(found))
+            ids.update(dict.fromkeys(found))
+        return list(ids)

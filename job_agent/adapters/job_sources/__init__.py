@@ -1,6 +1,5 @@
-"""Driven adapters for the JobSource port."""
+"""Driven adapters for the JobSource port. Sources are deterministic: no LLM is involved in searching."""
 
-from .mcp_job_source import McpJobSource, McpServerParams
-from .web_search_job_source import WebSearchJobSource
+from .linkedin_mcp_job_source import LinkedInMcpJobSource, McpServerParams
 
-__all__ = ["McpJobSource", "McpServerParams", "WebSearchJobSource"]
+__all__ = ["LinkedInMcpJobSource", "McpServerParams"]

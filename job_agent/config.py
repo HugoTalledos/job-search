@@ -18,25 +18,37 @@ class RepoSpec(BaseModel):
     branch: str | None = None
 
 
-class McpServerSpec(BaseModel):
-    """A job-board MCP server; each one becomes an independent JobSource adapter."""
+class LinkedInSourceConfig(BaseModel):
+    """LinkedIn through its MCP server, queried directly (no LLM)."""
 
-    name: str
-    command: str
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
+    command: str = "uvx"
+    args: list[str] = Field(default_factory=lambda: ["mcp-server-linkedin@latest"])
+    env: dict[str, str] = Field(default_factory=dict)
+    max_pages: int = 2
+
+
+class SourcesConfig(BaseModel):
+    linkedin: LinkedInSourceConfig = Field(default_factory=LinkedInSourceConfig)
 
 
 class SearchConfig(BaseModel):
+    # Search plan (deterministic): keywords x locations
     locations: list[str] = Field(default_factory=lambda: ["Remote"])
     extra_keywords: list[str] = Field(default_factory=list)
+    max_roles_from_profile: int = 3
+    max_queries: int = 8
+    # Filters applied by the job board itself
+    posted_within_days: int = 1
+    work_types: list[str] = Field(default_factory=list)
+    experience_levels: list[str] = Field(default_factory=list)
+    # Filters applied by the agent before any LLM call
     exclude_companies: list[str] = Field(default_factory=list)
-    posted_within_days: int = 2
+    exclude_title_keywords: list[str] = Field(default_factory=list)
+    # Budgets
+    max_details_per_run: int = 40
     max_jobs_per_run: int = 25
-    web_search: bool = False
-    web_search_domains: list[str] = Field(default_factory=list)
-    mcp_servers: list[McpServerSpec] = Field(default_factory=list)
+    sources: SourcesConfig = Field(default_factory=SourcesConfig)
 
 
 class MatchingConfig(BaseModel):
