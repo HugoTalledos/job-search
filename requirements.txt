@@ -7,3 +7,5 @@ pypdf>=4
 weasyprint>=62
 mcp>=2
 google-cloud-firestore>=2.20
+fastapi>=0.115
+uvicorn>=0.30
