@@ -1,16 +1,16 @@
 sequenceDiagram
     autonumber
-    actor Cron as GitHub Actions
+    actor Cron as launchd (macOS)
     participant CLI as CLI
     participant RSC as RunSearchCycle
     participant EP as EnsureProfile
-    participant Store as Persistencia (data/, output/)
+    participant Store as Disco local (data/, output/)
     participant Src as JobSource (LinkedIn vía MCP)
     participant LLM as LLM (matcher, selector, tailor)
     participant Notif as Notifier (Telegram)
     actor User as Tú
 
-    Cron->>CLI: python -m job_agent run
+    Cron->>CLI: run_local.sh → python -m job_agent run
     CLI->>RSC: execute()
 
     rect rgba(127,127,127,0.08)
@@ -90,4 +90,3 @@ sequenceDiagram
 
     RSC-->>CLI: CycleReport
     CLI-->>Cron: fin
-    Cron->>Store: git commit + push de data/ y output/

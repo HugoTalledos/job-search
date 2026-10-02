@@ -106,15 +106,14 @@ def _slug(text: str, limit: int = 40) -> str:
 
 
 class FileSystemApplicationStore:
-    """ApplicationStore port: ``output/<date>/<company>-<title>-<id>/`` with resume.{md,html,pdf}, a README
-    explaining the changes and ``version.json`` (the catalogue entry used to decide reuse)."""
+    """ApplicationStore port on the local file system: ``<output_dir>/<date>/<company>-<title>-<id>/`` with
+    resume.{md,html,pdf}, a README explaining the changes and ``version.json`` (the catalogue entry used to
+    decide reuse). Version ids are paths relative to ``output_dir``."""
 
     VERSION_FILE = "version.json"
 
-    def __init__(self, output_dir: Path, project_root: Path, web_url_base: str | None = None) -> None:
+    def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
-        self.project_root = project_root
-        self.web_url_base = web_url_base  # e.g. https://github.com/<owner>/<repo>/blob/<branch>
 
     def save(
         self,
@@ -159,12 +158,7 @@ class FileSystemApplicationStore:
         pdf, md = folder / "resume.pdf", folder / "resume.md"
         if not md.exists():
             raise FileNotFoundError(f"No resume stored for version {version_id}")
-        return SavedApplication(
-            version_id=version_id,
-            folder=version_id,
-            attachment=pdf if pdf.exists() else md,
-            link=f"{self.web_url_base}/{version_id}/resume.md" if self.web_url_base else None,
-        )
+        return SavedApplication(version_id=version_id, folder=str(folder), attachment=pdf if pdf.exists() else md)
 
     def record_use(self, version_id: str, job: JobPosting) -> None:
         folder = self._folder(version_id)
@@ -175,10 +169,10 @@ class FileSystemApplicationStore:
         self._write_version(folder, version)
 
     def _id(self, folder: Path) -> str:
-        return folder.relative_to(self.project_root).as_posix()
+        return folder.relative_to(self.output_dir).as_posix()
 
     def _folder(self, version_id: str) -> Path:
-        folder = (self.project_root / version_id).resolve()
+        folder = (self.output_dir / version_id).resolve()
         if not folder.is_relative_to(self.output_dir.resolve()):
             raise ValueError(f"Invalid resume version id: {version_id}")
         return folder

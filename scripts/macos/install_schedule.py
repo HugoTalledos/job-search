@@ -80,12 +80,27 @@ def preflight() -> list[str]:
     if not (Path.home() / ".linkedin-mcp" / "cookies.json").exists():
         problems.append("No hay sesión de LinkedIn: ejecuta 'uvx mcp-server-linkedin@latest --login'")
     home = Path.home()
-    if any(REPO.is_relative_to(home / p) for p in PROTECTED):
-        problems.append(
-            f"El repo está en {REPO}: macOS impide a las tareas programadas acceder a Documentos, Escritorio, "
-            "Descargas o iCloud. Muévelo (p. ej. a ~/dev/job-search) y vuelve a ejecutar este instalador."
-        )
+    for label, path in [("El repo", REPO), *storage_dirs()]:
+        if any(path.is_relative_to(home / p) for p in PROTECTED):
+            problems.append(
+                f"{label} está en {path}: macOS impide a las tareas programadas acceder a Documentos, "
+                "Escritorio, Descargas o iCloud. Usa otra ubicación (p. ej. ~/dev/job-search) y vuelve a "
+                "ejecutar este instalador."
+            )
     return problems
+
+
+def storage_dirs() -> list[tuple[str, Path]]:
+    """data_dir and output_dir from config.yaml, resolved by the project's own code (needs .venv)."""
+    python = REPO / ".venv" / "bin" / "python"
+    if not python.exists():
+        return []
+    code = "from job_agent.config import load_config as l; c = l().storage; print(c.data_path); print(c.output_path)"
+    result = subprocess.run([str(python), "-c", code], cwd=REPO, capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    data, output = result.stdout.strip().splitlines()
+    return [("storage.data_dir", Path(data)), ("storage.output_dir", Path(output))]
 
 
 def main() -> int:

@@ -71,3 +71,11 @@ llm:
   #   tailor: anthropic/claude-sonnet-4.5
   openrouter:
     reasoning: false           # true = enviar el nivel de esfuerzo a modelos con razonamiento
+
+# Dónde guarda el agente su estado (perfil, ofertas vistas, historial) y el catálogo de hojas de vida.
+# Solo en este computador: están en .gitignore y nunca se suben al repositorio. Rutas relativas a la
+# carpeta del proyecto, o absolutas (p. ej. ~/Documents/job-search-data/output para tenerlas a mano;
+# ojo: launchd no puede escribir en Documentos/Escritorio sin permisos de acceso completo al disco).
+storage:
+  data_dir: data
+  output_dir: output

@@ -1,5 +1,5 @@
 flowchart LR
-    GHA["GitHub Actions<br/>cron 3 veces al día"]
+    GHA["launchd (macOS)<br/>3 veces al día"]
     CLI["entrypoints/cli.py<br/>adaptador de entrada"]
     BOOT["bootstrap.py<br/>raíz de composición<br/>(lee config.yaml y conecta<br/>cada puerto con su adaptador)"]
 
@@ -40,7 +40,7 @@ flowchart LR
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
         E_JOB["Servidor MCP de LinkedIn"]
         E_LLM["API de Anthropic (Claude)<br/>u OpenRouter (cualquier modelo)"]
-        E_STO[("Repo: data/ · output/")]
+        E_STO[("Disco local: data/ · output/<br/>(fuera de git)")]
         E_NOT["Telegram"]
     end
 

@@ -26,7 +26,7 @@ from .adapters.persistence import (
 from .adapters.resume import FileResumeSource
 from .application import EnsureProfile, RunSearchCycle
 from .application.ports import JobSource, Notifier
-from .config import ROOT, Config, LlmConfig
+from .config import Config, LlmConfig
 from .domain.models import RepoRef
 from .domain.policies import JobFilter, MatchingPolicy, ReusePolicy, SearchPreferences
 
@@ -72,13 +72,8 @@ def build_notifier(dry_run: bool) -> Notifier:
     return TelegramNotifier(token, chat_id)
 
 
-def _web_url_base() -> str | None:
-    server, repo, ref = (os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_REF_NAME"))
-    return f"{server}/{repo}/blob/{ref}" if server and repo and ref else None
-
-
 def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
-    data = ROOT / "data"
+    data, output = cfg.storage.data_path, cfg.storage.output_path
     models: dict[str, StructuredModel] = {}
     resume = FileResumeSource(cfg.resume_file)
     ensure_profile = EnsureProfile(
@@ -102,7 +97,7 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
         matcher=LlmJobMatcher(build_llm(cfg.llm, "match", models)),
         tailor=LlmResumeTailor(build_llm(cfg.llm, "tailor", models)),
         selector=LlmResumeSelector(build_llm(cfg.llm, "select", models)),
-        applications=FileSystemApplicationStore(ROOT / "output", ROOT, _web_url_base()),
+        applications=FileSystemApplicationStore(output),
         notifier=notifier,
         seen=JsonSeenJobsRepository(data / "state.json"),
         history=JsonlMatchHistory(data / "matches.jsonl"),

@@ -29,7 +29,12 @@ def format_message(alert: JobAlert) -> str:
     ]
     if match.gaps:
         lines += ["", "<b>Brechas</b>", *[f"• {e(g)}" for g in match.gaps[:4]]]
-    link = [f'<a href="{e(resume_link, quote=True)}">Ver versión en el repositorio</a>'] if resume_link else []
+    if resume_link:
+        link = [f'<a href="{e(resume_link, quote=True)}">Ver la hoja de vida</a>']
+    elif alert.application:
+        link = [f"📁 <code>{e(alert.application.folder)}</code>"]
+    else:
+        link = []
     source = alert.source_version
     source_desc = f"{e(source.job_title)} — {e(source.company)} ({source.created_at:%Y-%m-%d})" if source else ""
     if alert.resume_origin == "reused" and source:

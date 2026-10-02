@@ -40,6 +40,12 @@ def test_adapted_resume_message(job, match, tailored):
     assert "Enfocado a backend" in text
 
 
+def test_message_shows_local_folder_without_link(job, match, tailored):
+    app = SavedApplication(version_id="v", folder="/Users/hugo/dev/job-search/output/2026-10-03/acme-x")
+    text = format_message(JobAlert(job=job, match=match, tailored=tailored, application=app, resume_origin="created"))
+    assert "📁 <code>/Users/hugo/dev/job-search/output/2026-10-03/acme-x</code>" in text
+
+
 def test_message_without_resume_and_truncation(job, match):
     fits = match.model_copy(update={"resume_undersells": False})
     assert "no se modificó" in format_message(JobAlert(job=job, match=fits))

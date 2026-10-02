@@ -1,12 +1,12 @@
 # job-search — agente de búsqueda de empleo
 
-Agente que, **3 veces al día** (en tu Mac o en GitHub Actions), busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
+Agente que corre en tu Mac **3 veces al día**, busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
 y, cuando una oferta encaja pero tu hoja de vida no te hace justicia, **crea una versión ajustada
 de tu CV** para esa oferta. Después te envía una notificación por **Telegram** con la oferta, por qué
 encaja y qué cambió en el CV (con el PDF adjunto).
 
 ```
-             ┌──────────── tu Mac (launchd 3×/día) o GitHub Actions ─────────────┐
+             ┌───────────────────── tu Mac (launchd 3×/día) ─────────────────────┐
 resume/      │                                                                │
 base.md ───► │ 1. Perfil   CV + repos git ──Claude──► data/profile.json       │
 repos git ─► │             (solo se rehace si cambian o pasan N días)        │
@@ -16,7 +16,7 @@ repos git ─► │             (solo se rehace si cambian o pasan N días)    
              │ 5. Ajuste   si encaja y el CV la "subvende" ──► CV a medida   │
              │             output/AAAA-MM-DD/<empresa>-<cargo>/resume.{md,pdf}│
              │ 6. Aviso    Telegram: oferta + motivos + cambios + PDF         │
-             │ 7. Estado   data/state.json, data/matches.jsonl → commit       │
+             │ 7. Estado   data/ y output/ en tu Mac (nunca en el repositorio)  │
              └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,8 +72,9 @@ Cuando una oferta nueva amerita un CV ajustado, el agente:
    - **crear** una nueva desde tu CV base.
 3. La notificación dice cuál de los tres casos ocurrió y, al reutilizar o adaptar, cuál versión usó.
 
-Se configura en `config.yaml` → `resume_reuse` (`enabled`, `max_candidates`). Como estas versiones
-viven en el repo, mantenlo **privado**.
+Se configura en `config.yaml` → `resume_reuse` (`enabled`, `max_candidates`). El catálogo vive solo en
+tu Mac, en `storage.output_dir` (por defecto `output/`, ignorado por git); haz copia de seguridad de esa
+carpeta si quieres conservarlo. La notificación indica la carpeta de cada versión.
 
 ## Arquitectura hexagonal
 
@@ -85,7 +86,7 @@ archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con q
 ```
                  adaptador de entrada                      adaptadores de salida
                 ┌────────────────────┐                  ┌──────────────────────────────────┐
- GitHub Actions │ entrypoints/cli.py │                  │ llm/  Anthropic u OpenRouter      │
+ launchd (Mac)  │ entrypoints/cli.py │                  │ llm/  Anthropic u OpenRouter      │
 (cron 3×/día)─►│                    │                  │   LlmProfileInferer               │
                 └─────────┬──────────┘                  │   LlmJobMatcher                  │
                           │                             │   LlmResumeTailor / Selector     │
@@ -125,11 +126,10 @@ Modelo: `claude-opus-5-5` con pensamiento adaptativo, salidas estructuradas (Pyd
 *fallback* del lado del servidor (`fallbacks: "default"`) por si el modelo declina una petición.
 Puedes cambiarlo con la variable `JOB_AGENT_MODEL`.
 
-## Ejecución local en macOS (recomendada)
+## Puesta en marcha (macOS)
 
 Correrlo en tu Mac usa tu misma sesión, IP y perfil de navegador de LinkedIn, lo que reduce el riesgo de
-verificaciones de seguridad, y no requiere secrets en GitHub. Lo pesado (Claude) corre en los servidores
-de Anthropic; en tu Mac solo corre un Chromium oculto unos minutos por corrida (~0,5-1 GB de RAM).
+verificaciones de seguridad. Lo pesado (el LLM) corre en los servidores del proveedor; en tu Mac solo corre un Chromium oculto unos minutos por corrida (~0,5-1 GB de RAM).
 
 1. **Clona el repo fuera de Documentos, Escritorio, Descargas o iCloud** (macOS bloquea ahí las tareas
    programadas), por ejemplo en `~/dev/job-search`, y entra en la carpeta.
@@ -137,9 +137,10 @@ de Anthropic; en tu Mac solo corre un Chromium oculto unos minutos por corrida (
    ```bash
    scripts/macos/setup.sh
    ```
-3. **Completa `.env`** con `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`.
-   `JOB_AGENT_GIT_SYNC=1` sube `data/` y `output/` al repo tras cada corrida (historial y enlaces en
-   las notificaciones); con `0` todo queda solo en tu Mac.
+3. **Completa `.env`** con la clave del LLM (`ANTHROPIC_API_KEY` u `OPENROUTER_API_KEY`, según
+   `llm.provider`), `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`. El perfil, las ofertas vistas, el
+   historial y las hojas de vida quedan en tu Mac (`storage` en `config.yaml`); nada de eso se sube al
+   repositorio.
 4. **Sesión de LinkedIn** (una vez; repítelo si LinkedIn cierra la sesión):
    ```bash
    uvx mcp-server-linkedin@latest --login
@@ -157,47 +158,12 @@ de Anthropic; en tu Mac solo corre un Chromium oculto unos minutos por corrida (
    (por eso `posted_within_days` está en 2). Correr ya: `launchctl kickstart gui/$(id -u)/<label>`
    (el instalador te muestra el comando exacto). Quitarlo: `--uninstall`.
 
-## Puesta en marcha en GitHub Actions (alternativa)
-
-1. **Repositorio privado.** El agente guarda tu perfil, tus CVs ajustados y el historial en este
-   repo; mantenlo privado.
-2. **Tu hoja de vida**: reemplaza `resume/base.md` (Markdown recomendado; también acepta `.pdf`
-   o `.txt` cambiando `resume_path`).
-3. **`config.yaml`**: usuario de GitHub, repos extra, ubicaciones, empresas a excluir, umbrales.
-4. **Bot de Telegram**: habla con [@BotFather](https://t.me/BotFather) → `/newbot` → token.
-   Escríbele algo a tu bot y abre `https://api.telegram.org/bot<TOKEN>/getUpdates` para ver tu `chat.id`.
-5. **Sesión de LinkedIn MCP** ([stickerdaniel/linkedin-mcp-server](https://github.com/stickerdaniel/linkedin-mcp-server)).
-   Este servidor usa tu sesión de LinkedIn (cookies), no una API key. En tu computador, con este repo clonado:
-   ```bash
-   uvx mcp-server-linkedin@latest --login                         # se abre un navegador: inicia sesión
-   python scripts/export_linkedin_session.py --set-secret         # con la GitHub CLI (gh) instalada
-   ```
-   El script exporta solo las cookies de LinkedIn y los metadatos de la sesión (menos de 1 KB en base64),
-   no el perfil completo del navegador (cientos de MB, que además supera el límite de 48 KB de los
-   secrets de GitHub). En el runner el servidor reconstruye una sesión nueva a partir de esas cookies.
-   Sin `gh`, ejecuta el script sin `--set-secret` y pega el contenido de `linkedin_session.b64` (es
-   corto) como secret `LINKEDIN_SESSION_B64`. Borra ese archivo después: contiene tu sesión.
-   Si LinkedIn cierra la sesión (al cambiar la contraseña, cerrar sesión en todos los dispositivos o
-   por una verificación de seguridad), repite estos dos comandos.
-6. **Secrets** del repo (Settings → Secrets and variables → Actions):
-
-   | Secret | Obligatorio | Uso |
-   |---|---|---|
-   | `ANTHROPIC_API_KEY` u `OPENROUTER_API_KEY` | sí | el LLM, según `llm.provider` |
-   | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | sí | notificaciones |
-   | `LINKEDIN_SESSION_B64` | para LinkedIn | sesión del MCP |
-   | `REPO_READ_TOKEN` | no | PAT de solo lectura si quieres que analice repos privados |
-
-7. Ejecuta el workflow **job-search** a mano (Actions → Run workflow, con `dry_run` la primera vez).
-   Para que corra solo 3 veces al día, descomenta `schedule` en `.github/workflows/job-search.yml`
-   (está desactivado porque la opción recomendada es la ejecución local; no actives ambas a la vez).
-
 ## Desarrollo y pruebas
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-export ANTHROPIC_API_KEY=...            # y opcionalmente TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+cp .env.example .env                    # y completa las claves
 python -m job_agent profile --force    # inferir y ver tu perfil
 python -m job_agent run --dry-run      # un ciclo completo sin enviar notificaciones
 python -m job_agent test-notify        # probar Telegram
@@ -206,7 +172,7 @@ pytest                                  # tests (no requieren API key)
 
 ## Agregar más fuentes
 
-Las fuentes son deterministas: no usan Claude para buscar. Para agregar otra bolsa de empleo (otra API,
+Las fuentes son deterministas: no usan el LLM para buscar. Para agregar otra bolsa de empleo (otra API,
 otro servidor MCP), implementa el puerto `JobSource` en `adapters/job_sources/`:
 
 1. Ejecuta las consultas del `SearchPlan` contra la fuente (aplicando sus filtros nativos si los tiene).
@@ -215,7 +181,7 @@ otro servidor MCP), implementa el puerto `JobSource` en `adapters/job_sources/`:
 3. Devuelve `JobPosting` con los campos que la fuente provea.
 
 Luego regístrala en `bootstrap.py` y agrega su sección en `search.sources` de `config.yaml`. Los filtros
-deterministas, la deduplicación y el puntaje de Claude se aplican igual a todas las fuentes.
+deterministas, la deduplicación y el puntaje del LLM se aplican igual a todas las fuentes.
 
 ## Notas
 

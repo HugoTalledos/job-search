@@ -78,6 +78,26 @@ class LlmConfig(BaseModel):
         return self.models.get(task) or os.environ.get("JOB_AGENT_MODEL") or self.model
 
 
+class StorageConfig(BaseModel):
+    """Where the agent keeps its state and tailored resumes (local only, never committed)."""
+
+    data_dir: str = "data"  # profile.json, state.json, matches.jsonl
+    output_dir: str = "output"  # tailored resumes catalogue
+
+    @staticmethod
+    def _resolve(value: str) -> Path:
+        path = Path(value).expanduser()
+        return path if path.is_absolute() else ROOT / path
+
+    @property
+    def data_path(self) -> Path:
+        return self._resolve(self.data_dir)
+
+    @property
+    def output_path(self) -> Path:
+        return self._resolve(self.output_dir)
+
+
 class Config(BaseModel):
     resume_path: str = "resume/base.md"
     github_user: str | None = None
@@ -88,6 +108,7 @@ class Config(BaseModel):
     matching: MatchingConfig = Field(default_factory=MatchingConfig)
     resume_reuse: ResumeReuseConfig = Field(default_factory=ResumeReuseConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     profile_refresh_days: int = 7
     language: str = "es"
 

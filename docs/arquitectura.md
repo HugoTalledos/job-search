@@ -13,7 +13,7 @@ Arquitectura hexagonal: los casos de uso (`application/`) y el dominio (`domain/
 
 ```mermaid
 flowchart LR
-    GHA["GitHub Actions<br/>cron 3 veces al día"]
+    GHA["launchd (macOS)<br/>3 veces al día"]
     CLI["entrypoints/cli.py<br/>adaptador de entrada"]
     BOOT["bootstrap.py<br/>raíz de composición<br/>(lee config.yaml y conecta<br/>cada puerto con su adaptador)"]
 
@@ -54,7 +54,7 @@ flowchart LR
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
         E_JOB["Servidor MCP de LinkedIn"]
         E_LLM["API de Anthropic (Claude)<br/>u OpenRouter (cualquier modelo)"]
-        E_STO[("Repo: data/ · output/")]
+        E_STO[("Disco local: data/ · output/<br/>(fuera de git)")]
         E_NOT["Telegram"]
     end
 
@@ -99,22 +99,22 @@ Los cuatro adaptadores `Llm*` comparten los prompts (`adapters/llm/prompts.py`) 
 
 ## Diagrama de secuencia: un ciclo completo
 
-Lo que pasa en cada una de las 3 ejecuciones diarias (`python -m job_agent run`).
+Lo que pasa en cada una de las 3 ejecuciones diarias que lanza launchd en tu Mac (`scripts/macos/run_local.sh`).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Cron as GitHub Actions
+    actor Cron as launchd (macOS)
     participant CLI as CLI
     participant RSC as RunSearchCycle
     participant EP as EnsureProfile
-    participant Store as Persistencia (data/, output/)
+    participant Store as Disco local (data/, output/)
     participant Src as JobSource (LinkedIn vía MCP)
     participant LLM as LLM (matcher, selector, tailor)
     participant Notif as Notifier (Telegram)
     actor User as Tú
 
-    Cron->>CLI: python -m job_agent run
+    Cron->>CLI: run_local.sh → python -m job_agent run
     CLI->>RSC: execute()
 
     rect rgba(127,127,127,0.08)
@@ -194,7 +194,6 @@ sequenceDiagram
 
     RSC-->>CLI: CycleReport
     CLI-->>Cron: fin
-    Cron->>Store: git commit + push de data/ y output/
 ```
 
 Notas:

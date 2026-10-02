@@ -8,3 +8,7 @@ config.local.yaml
 linkedin_session.b64
 *.b64
 logs/
+# Estado y hojas de vida generadas: solo locales (ver storage en config.yaml)
+data/
+output/
+.run.lock

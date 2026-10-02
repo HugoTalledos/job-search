@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pathlib import Path
 
 from job_agent.adapters.persistence import (
     FileSystemApplicationStore,
@@ -57,15 +58,15 @@ def test_match_history_appends(tmp_path):
 
 
 def test_application_store_catalogue(tmp_path, job, match, tailored):
-    store = FileSystemApplicationStore(tmp_path / "output", tmp_path, "https://github.com/o/r/blob/main")
+    store = FileSystemApplicationStore(tmp_path / "anywhere" / "resumes")  # any folder, inside or outside the repo
     assert store.list_versions() == []
 
     saved = store.save(job, match, tailored, base_fingerprint="fp1")
-    folder = tmp_path / saved.folder
+    folder = tmp_path / "anywhere" / "resumes" / saved.version_id
+    assert saved.folder == str(folder.resolve()) and saved.link is None
     assert (folder / "resume.md").read_text() == tailored.resume_markdown
     assert "Enfocado a backend" in (folder / "README.md").read_text()
     assert saved.attachment.name in ("resume.pdf", "resume.md")
-    assert saved.link == f"https://github.com/o/r/blob/main/{saved.version_id}/resume.md"
 
     [version] = store.list_versions()
     assert version.id == saved.version_id and version.base_fingerprint == "fp1"
@@ -79,10 +80,10 @@ def test_application_store_catalogue(tmp_path, job, match, tailored):
 
     adapted = store.save(other, match, tailored, base_fingerprint="fp1", adapted_from=version.id)
     assert len(store.list_versions()) == 2
-    assert f"Adaptada a partir de: `{version.id}`" in (tmp_path / adapted.folder / "README.md").read_text()
+    assert f"Adaptada a partir de: `{version.id}`" in (Path(adapted.folder) / "README.md").read_text()
 
 
 def test_application_store_rejects_paths_outside_output(tmp_path):
-    store = FileSystemApplicationStore(tmp_path / "output", tmp_path)
+    store = FileSystemApplicationStore(tmp_path / "output")
     with pytest.raises(ValueError):
         store.load_markdown("../etc")
