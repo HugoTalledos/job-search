@@ -1,5 +1,31 @@
 # job-search — agente de búsqueda de empleo
 
+## Webhook de entrada para la inferencia
+
+`job_agent` expone `POST /webhooks/inference` como punto de entrada del futuro agente remoto.
+En esta primera entrega, al recibir una petición válida lee todas las ofertas de `job_postings`
+en Cloud Firestore y responde `200` sin cuerpo. Todavía no ejecuta inferencia ni guarda resultados.
+Si la lectura falla, responde `500`; una API key ausente o incorrecta recibe `401` sin consultar
+Firestore.
+
+Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google y `JOB_AGENT_WEBHOOK_API_KEY` en el
+entorno (o en `.env` para una ejecución local). Instala las dependencias de `requirements.txt` y
+arranca el servicio desde la raíz del repositorio:
+
+```bash
+.venv/bin/python -m uvicorn job_agent.webhook:app --host 127.0.0.1 --port 8000
+```
+
+Para enviar una notificación local:
+
+```bash
+curl -i -X POST http://127.0.0.1:8000/webhooks/inference \
+  -H "X-API-Key: <tu-api-key>"
+```
+
+Sustituye `<tu-api-key>` por la clave configurada. La respuesta correcta es `HTTP/1.1 200 OK`
+con cuerpo vacío. La clave no debe incluirse en la URL.
+
 ## Buscador local con Firestore
 
 El componente [`local_collector/`](local_collector/) corre en tu Mac, usa tu sesión de
