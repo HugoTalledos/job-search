@@ -137,7 +137,7 @@ verificaciones de seguridad. Lo pesado (el LLM) corre en los servidores del prov
    ```bash
    scripts/macos/setup.sh
    ```
-3. **Completa `.env`** con la clave del LLM (`ANTHROPIC_API_KEY` u `OPENROUTER_API_KEY`, según
+3. **Completa `.env`** (el script lo crea copiando `example.env`, que explica cada variable) con la clave del LLM (`ANTHROPIC_API_KEY` u `OPENROUTER_API_KEY`, según
    `llm.provider`), `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`. El perfil, las ofertas vistas, el
    historial y las hojas de vida quedan en tu Mac (`storage` en `config.yaml`); nada de eso se sube al
    repositorio.
@@ -163,7 +163,7 @@ verificaciones de seguridad. Lo pesado (el LLM) corre en los servidores del prov
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                    # y completa las claves
+cp example.env .env                     # y completa las claves (ver comentarios en example.env)
 python -m job_agent profile --force    # inferir y ver tu perfil
 python -m job_agent run --dry-run      # un ciclo completo sin enviar notificaciones
 python -m job_agent test-notify        # probar Telegram

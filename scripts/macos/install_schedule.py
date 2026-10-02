@@ -74,7 +74,7 @@ def preflight() -> list[str]:
     if not (REPO / ".venv" / "bin" / "python").exists():
         problems.append("No existe .venv: ejecuta primero scripts/macos/setup.sh")
     if not (REPO / ".env").exists():
-        problems.append("No existe .env: cópialo de .env.example y complétalo")
+        problems.append("No existe .env: cópialo de example.env (cp example.env .env) y complétalo")
     if not shutil.which("uvx"):
         problems.append("No encuentro uvx: instálalo con 'brew install uv'")
     if not (Path.home() / ".linkedin-mcp" / "cookies.json").exists():

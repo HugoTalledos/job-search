@@ -28,8 +28,8 @@ fi
 echo "Dependencias de Python instaladas en .venv"
 
 if [ ! -f .env ]; then
-  cp .env.example .env && chmod 600 .env
-  echo "Creé .env a partir de .env.example: complétalo con tus claves."
+  cp example.env .env && chmod 600 .env
+  echo "Creé .env a partir de example.env: complétalo con tus claves."
 fi
 
 if [ ! -f "$HOME/.linkedin-mcp/cookies.json" ]; then

@@ -21,15 +21,16 @@ def test_load_dotenv(tmp_path, monkeypatch):
     from job_agent.config import load_dotenv
 
     env = tmp_path / ".env"
-    env.write_text("# comment\nA_KEY=one\nexport B_KEY='two words'\nC_KEY=\"3\"\nEXISTING=new\nbroken line\n")
+    env.write_text("# comment\nA_KEY=one\nexport B_KEY='two words'\nC_KEY=\"3\"\nEXISTING=new\nbroken line\nBLANK_KEY=\n")
     monkeypatch.setenv("EXISTING", "old")
-    for k in ("A_KEY", "B_KEY", "C_KEY"):
+    for k in ("A_KEY", "B_KEY", "C_KEY", "BLANK_KEY"):
         monkeypatch.delenv(k, raising=False)
     load_dotenv(env)
     import os
 
     assert (os.environ["A_KEY"], os.environ["B_KEY"], os.environ["C_KEY"]) == ("one", "two words", "3")
     assert os.environ["EXISTING"] == "old"  # real environment wins
+    assert "BLANK_KEY" not in os.environ  # blank placeholders stay unset
     load_dotenv(tmp_path / "missing.env")  # no error
 
 

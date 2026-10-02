@@ -143,7 +143,8 @@ def load_dotenv(path: str | os.PathLike | None = None) -> None:
         key, value = key.strip(), value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        os.environ.setdefault(key, value)
+        if value:  # a blank placeholder (KEY=) means "not set"
+            os.environ.setdefault(key, value)
 
 
 def load_config(path: str | os.PathLike | None = None) -> Config:
