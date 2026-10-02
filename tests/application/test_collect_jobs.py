@@ -1,6 +1,6 @@
 import pytest
 
-from job_agent.application.collect_jobs import CollectJobs
+from local_collector.collect_jobs import CollectJobs
 from job_agent.domain.models import CollectorPlan, JobLead, SearchPlan, SearchQuery, SourceCollection
 from job_agent.domain.policies import job_key, lead_key
 

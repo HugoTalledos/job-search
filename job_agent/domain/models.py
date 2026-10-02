@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from job_contracts.models import (
+    CollectionReport, CollectorPlan, JobLead, JobPosting, SearchPlan, SearchQuery, SourceCollection,
+)
 
 
 class Skill(BaseModel):
@@ -37,18 +40,6 @@ class Profile(BaseModel):
     strengths_missing_from_resume: list[str] = Field(
         description="Things the repositories prove that the resume does not mention or undersells"
     )
-
-
-class JobPosting(BaseModel):
-    source: str = Field(description="Where the posting was found, e.g. 'linkedin' or the site domain")
-    external_id: str = Field(description="ID in the source system, or empty string if unknown")
-    title: str
-    company: str
-    location: str
-    url: str
-    remote: Literal["remote", "hybrid", "onsite", "unknown"]
-    posted_at: str = Field(description="Posting date as reported by the source, or empty string")
-    description: str = Field(description="Full job description text as returned by the source (do not summarise)")
 
 
 class JobSearchResult(BaseModel):
@@ -135,53 +126,6 @@ class StoredProfile(BaseModel):
     built_at: datetime
     repos_checked_at: datetime | None = None  # last time repository changes were looked up
     repositories: list[RepoEvidence] = Field(default_factory=list)
-
-
-class SearchQuery(BaseModel):
-    """One deterministic query sent to a job source."""
-
-    keywords: str
-    location: str | None = None
-
-
-class SearchPlan(BaseModel):
-    """Queries plus the filters every source applies natively (when it supports them)."""
-
-    queries: list[SearchQuery]
-    posted_within_days: int
-    work_types: list[str] = Field(default_factory=list)  # remote, hybrid, on_site
-    experience_levels: list[str] = Field(default_factory=list)  # internship, entry, associate, mid_senior...
-
-
-class JobLead(BaseModel):
-    """A posting identifier returned by a search, before its details are fetched."""
-
-    source: str
-    external_id: str
-    url: str = ""
-
-
-class SourceCollection(BaseModel):
-    """Results and diagnostics from one job-source collection."""
-
-    jobs: list[JobPosting]
-    leads: int
-    known: int
-    search_errors: list[str] = Field(default_factory=list)
-    detail_errors: list[str] = Field(default_factory=list)
-
-
-class CollectorPlan(BaseModel):
-    search: SearchPlan
-    max_details_per_run: int = Field(gt=0)
-
-
-class CollectionReport(BaseModel):
-    leads: int = 0
-    known: int = 0
-    fetched: int = 0
-    inserted: int = 0
-    errors: list[str] = Field(default_factory=list)
 
 
 class ResumeUse(BaseModel):

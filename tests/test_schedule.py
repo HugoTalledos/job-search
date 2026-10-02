@@ -36,12 +36,13 @@ def test_collector_dry_run_prints_installable_plist(monkeypatch, capsys):
     assert plist["ProgramArguments"][1].endswith("run_collector.sh")
 
 
-@pytest.mark.parametrize("runner,command", [("run_local.sh", "run"), ("run_collector.sh", "collect")])
+@pytest.mark.parametrize("runner,command", [("run_local.sh", "job_agent run"), ("run_collector.sh", "local_collector")])
 def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path, runner, command):
     scripts = tmp_path / "scripts" / "macos"
     scripts.mkdir(parents=True)
     shutil.copy2(install_schedule.REPO / "scripts" / "macos" / runner, scripts / runner)
-    python = tmp_path / ".venv" / "bin" / "python"
+    environment = ".venv-collector" if runner == "run_collector.sh" else ".venv"
+    python = tmp_path / environment / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text('#!/bin/sh\necho "$*" >> "$TEST_RUN_LOG"\n')
     python.chmod(0o755)
@@ -54,7 +55,7 @@ def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path, runner, comm
         assert process.poll() is None
         lock.rmdir()
         assert process.wait(timeout=5) == 0
-        assert f"-m job_agent {command}" in run_log.read_text()
+        assert f"-m {command}" in run_log.read_text()
     finally:
         if process.poll() is None:
             process.terminate()

@@ -15,7 +15,6 @@ from ..domain.models import (
     JobLead,
     JobMatch,
     JobPosting,
-    CollectorPlan,
     MatchRecord,
     Profile,
     RepoEvidence,
@@ -26,7 +25,6 @@ from ..domain.models import (
     SearchPlan,
     StoredProfile,
     TailoredResume,
-    SourceCollection,
 )
 
 # --- Candidate data ----------------------------------------------------------------------------
@@ -103,20 +101,6 @@ class JobSource(Protocol):
     def name(self) -> str: ...
 
     def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]: ...
-
-
-class JobCollectorSource(Protocol):
-    def collect_new(
-        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], set[str]], max_details: int,
-    ) -> SourceCollection: ...
-
-
-class CollectorStore(Protocol):
-    def load_plan(self) -> CollectorPlan: ...
-
-    def known_keys(self, leads: list[JobLead]) -> set[str]: ...
-
-    def save(self, job: JobPosting) -> bool: ...
 
 
 # --- Outputs -----------------------------------------------------------------------------------

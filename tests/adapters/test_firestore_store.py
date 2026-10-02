@@ -1,6 +1,6 @@
 import pytest
 
-from job_agent.adapters.persistence.firestore_store import FirestoreCollectorStore
+from local_collector.adapters.firestore_store import FirestoreCollectorStore
 from job_agent.domain.models import JobLead
 from job_agent.domain.policies import job_key, lead_key
 

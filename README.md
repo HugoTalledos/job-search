@@ -2,15 +2,16 @@
 
 ## Buscador local con Firestore
 
-El monorepo incluye un buscador local para la nueva arquitectura. Corre en tu Mac, usa tu sesión de
+El componente [`local_collector/`](local_collector/) corre en tu Mac, usa tu sesión de
 LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. El agente remoto que evaluará
 esas ofertas, enviará avisos por Telegram y generará CV al responder es una etapa posterior. El comando
-anterior `run` sigue disponible durante la transición.
+anterior `run` sigue disponible durante la transición. `job_contracts/` contiene los modelos de los
+documentos compartidos; el buscador tiene entrada, configuración y entorno Python propios.
 
 Para preparar el buscador:
 
 1. Crea un proyecto Firebase con una base de [Cloud Firestore](https://firebase.google.com/docs/firestore/quickstart).
-2. Instala las dependencias con `scripts/macos/setup.sh`. Conserva tu `.env` si ya existe; agrega
+2. Instala solo las dependencias del buscador con `scripts/macos/setup_collector.sh`. Conserva tu `.env` si ya existe; agrega
    `FIRESTORE_PROJECT_ID` y `GOOGLE_APPLICATION_CREDENTIALS` (ruta absoluta a un JSON de cuenta de
    servicio guardado fuera del repositorio). El buscador usa estas credenciales para acceder a Firestore.
 3. Genera el plan inicial a partir del perfil local existente y `config.yaml`:
@@ -23,6 +24,7 @@ Para preparar el buscador:
    ```bash
    scripts/macos/run_collector.sh
    ```
+   También puedes invocarlo con `.venv-collector/bin/python -m local_collector`.
 5. Programa las tres búsquedas diarias (08:00, 14:00 y 22:00 por defecto):
    ```bash
    python3 scripts/macos/install_schedule.py --component collector
@@ -32,7 +34,20 @@ La programación anterior se administra por separado con `--component legacy` (v
 Si ambas están activas, cada corrida espera a que termine la otra antes de usar LinkedIn. El buscador nuevo no envía notificaciones
 hasta que se implemente el agente remoto.
 
-## Flujo actual
+```text
+local_collector/          # búsqueda local, LinkedIn MCP, Firestore y CLI
+job_contracts/            # esquemas compartidos de SearchPlan y JobPosting
+job_agent/                # agente anterior; luego evolucionará al servicio remoto
+local_collector/requirements.txt
+scripts/macos/setup_collector.sh
+scripts/macos/run_collector.sh
+```
+
+La corrida programada importa `local_collector` y `job_contracts`, sin importar `job_agent` ni sus
+dependencias de LLM, Telegram o PDF. `job_agent collect` se conserva como puente de compatibilidad y
+`job_agent seed-search-plan` prepara el plan inicial a partir del perfil local existente.
+
+## Flujo anterior (`job_agent run`)
 
 Agente que corre en tu Mac **3 veces al día**, busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
 y, cuando una oferta encaja pero tu hoja de vida no te hace justicia, **crea una versión ajustada

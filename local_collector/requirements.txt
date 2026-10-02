@@ -1,0 +1,5 @@
+# Local collector only: no LLM, Telegram, PDF or resume dependencies.
+pydantic>=2.7
+pyyaml>=6
+mcp>=2
+google-cloud-firestore>=2.20

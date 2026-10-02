@@ -31,7 +31,7 @@ La programación conserva `posted_within_days: 2`, que hoy cubre una corrida per
 
 ## Organización del monorepo
 
-El código de búsqueda y los modelos `JobLead`, `JobPosting` y `SearchPlan` existentes se reutilizarán. Se añadirá un caso de uso de recolección local, un adaptador Firestore para leer el plan y guardar ofertas, y una entrada CLI específica. El agente remoto podrá reutilizar los modelos de dominio cuando se implemente; este diseño no exige dividir el repositorio en paquetes instalables ahora. El script y la configuración de `launchd` apuntarán al nuevo comando. Las tareas actuales de evaluación y CV se retirarán del camino programado local cuando la ruta remota esté lista.
+El buscador vive en el paquete `local_collector`, con su caso de uso, adaptadores LinkedIn MCP y Firestore, configuración, CLI y dependencias propias. Los documentos compartidos (`JobLead`, `JobPosting`, `SearchPlan` y otros modelos de recolección) viven en `job_contracts`; el agente anterior los importa para conservar el mismo esquema. `scripts/macos/run_collector.sh` y `launchd` invocan `python -m local_collector` desde un entorno `.venv-collector` separado. El comando antiguo `job_agent collect` queda como puente de compatibilidad durante la transición. Las tareas de evaluación y CV se retirarán del camino programado local cuando la ruta remota esté lista.
 
 ## Comprobación y límite de entrega
 

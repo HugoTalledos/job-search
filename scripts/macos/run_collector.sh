@@ -25,13 +25,13 @@ while ! mkdir "$LOCK" 2>/dev/null; do
 done
 trap 'rm -rf "$LOCK"' EXIT
 
-PYTHON="$REPO/.venv/bin/python"
+PYTHON="$REPO/.venv-collector/bin/python"
 if [ ! -x "$PYTHON" ]; then
-  echo "No existe .venv; ejecuta primero scripts/macos/setup.sh"
+  echo "No existe .venv-collector; ejecuta primero scripts/macos/setup_collector.sh"
   exit 1
 fi
 
-"$PYTHON" -m job_agent collect "$@"
+"$PYTHON" -m local_collector "$@"
 STATUS=$?
 echo "Buscador terminó con código $STATUS"
 find logs -name 'collector-*.log' -mtime +30 -delete 2>/dev/null

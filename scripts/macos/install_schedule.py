@@ -74,8 +74,10 @@ def launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 def preflight(component: str = "legacy") -> list[str]:
     problems = []
-    if not (REPO / ".venv" / "bin" / "python").exists():
-        problems.append("No existe .venv: ejecuta primero scripts/macos/setup.sh")
+    environment = ".venv-collector" if component == "collector" else ".venv"
+    setup = "setup_collector.sh" if component == "collector" else "setup.sh"
+    if not (REPO / environment / "bin" / "python").exists():
+        problems.append(f"No existe {environment}: ejecuta primero scripts/macos/{setup}")
     if not (REPO / ".env").exists():
         problems.append("No existe .env: cópialo de example.env (cp example.env .env) y complétalo")
     if not shutil.which("uvx"):

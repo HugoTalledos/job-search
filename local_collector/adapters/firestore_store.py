@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from google.api_core.exceptions import Conflict
 from google.cloud import firestore
 
-from ...domain.models import CollectorPlan, JobLead, JobPosting
-from ...domain.policies import job_key, lead_key
+from job_contracts.models import CollectorPlan, JobLead, JobPosting
+from job_contracts.keys import job_key, lead_key
 
 
 class FirestoreCollectorStore:

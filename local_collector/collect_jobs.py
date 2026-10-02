@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from ..domain.models import CollectionReport
+from job_contracts.models import CollectionReport
 from .ports import CollectorStore, JobCollectorSource
 
 log = logging.getLogger(__name__)

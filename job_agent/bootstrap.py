@@ -20,7 +20,6 @@ from .adapters.llm import (
     StructuredModel,
 )
 from .adapters.notifications import ConsoleNotifier, TelegramNotifier
-from .adapters.persistence.firestore_store import FirestoreCollectorStore
 from .adapters.persistence import (
     FileSystemApplicationStore,
     JsonlMatchHistory,
@@ -29,7 +28,6 @@ from .adapters.persistence import (
 )
 from .adapters.resume import FileResumeSource
 from .application import EnsureProfile, RunSearchCycle
-from .application.collect_jobs import CollectJobs
 from .application.ports import JobSource, Notifier
 from .config import Config, LlmConfig
 from .domain.models import RepoRef
@@ -91,7 +89,11 @@ def build_search_preferences(cfg: Config) -> SearchPreferences:
     )
 
 
-def build_collector(cfg: Config) -> CollectJobs:
+def build_collector(cfg: Config):
+    """Compatibility bridge for the old CLI; scheduled collection uses local_collector."""
+    from local_collector.adapters.firestore_store import FirestoreCollectorStore
+    from local_collector.collect_jobs import CollectJobs
+
     project = os.environ.get("FIRESTORE_PROJECT_ID", "").strip()
     if not project:
         raise ValueError("FIRESTORE_PROJECT_ID no está configurado")
