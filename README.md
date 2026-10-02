@@ -1,12 +1,12 @@
 # job-search — agente de búsqueda de empleo
 
-Agente que, **3 veces al día**, busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
+Agente que, **3 veces al día** (en tu Mac o en GitHub Actions), busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
 y, cuando una oferta encaja pero tu hoja de vida no te hace justicia, **crea una versión ajustada
 de tu CV** para esa oferta. Después te envía una notificación por **Telegram** con la oferta, por qué
 encaja y qué cambió en el CV (con el PDF adjunto).
 
 ```
-             ┌──────────────── GitHub Actions (cron 3×/día) ─────────────────┐
+             ┌──────────── tu Mac (launchd 3×/día) o GitHub Actions ─────────────┐
 resume/      │                                                                │
 base.md ───► │ 1. Perfil   CV + repos git ──Claude──► data/profile.json       │
 repos git ─► │             (solo se rehace si cambian o pasan N días)        │
@@ -105,7 +105,39 @@ Modelo: `claude-opus-5-5` con pensamiento adaptativo, salidas estructuradas (Pyd
 *fallback* del lado del servidor (`fallbacks: "default"`) por si el modelo declina una petición.
 Puedes cambiarlo con la variable `JOB_AGENT_MODEL`.
 
-## Puesta en marcha
+## Ejecución local en macOS (recomendada)
+
+Correrlo en tu Mac usa tu misma sesión, IP y perfil de navegador de LinkedIn, lo que reduce el riesgo de
+verificaciones de seguridad, y no requiere secrets en GitHub. Lo pesado (Claude) corre en los servidores
+de Anthropic; en tu Mac solo corre un Chromium oculto unos minutos por corrida (~0,5-1 GB de RAM).
+
+1. **Clona el repo fuera de Documentos, Escritorio, Descargas o iCloud** (macOS bloquea ahí las tareas
+   programadas), por ejemplo en `~/dev/job-search`, y entra en la carpeta.
+2. **Preparación** (Python 3.10+, `uv`, `pango` para los PDF, dependencias y `.env`):
+   ```bash
+   scripts/macos/setup.sh
+   ```
+3. **Completa `.env`** con `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`.
+   `JOB_AGENT_GIT_SYNC=1` sube `data/` y `output/` al repo tras cada corrida (historial y enlaces en
+   las notificaciones); con `0` todo queda solo en tu Mac.
+4. **Sesión de LinkedIn** (una vez; repítelo si LinkedIn cierra la sesión):
+   ```bash
+   uvx mcp-server-linkedin@latest --login
+   ```
+5. **Prueba** sin enviar notificaciones y revisa el log:
+   ```bash
+   scripts/macos/run_local.sh --dry-run
+   tail -100 logs/run-$(date +%Y-%m-%d).log
+   ```
+6. **Programa las 3 corridas diarias** (por defecto 08:00, 14:00 y 22:00; cámbialas con `--times`):
+   ```bash
+   python3 scripts/macos/install_schedule.py
+   ```
+   Si el Mac está suspendido a esa hora, la corrida se ejecuta al despertar; si está apagado, se pierde
+   (por eso `posted_within_days` está en 2). Correr ya: `launchctl kickstart gui/$(id -u)/<label>`
+   (el instalador te muestra el comando exacto). Quitarlo: `--uninstall`.
+
+## Puesta en marcha en GitHub Actions (alternativa)
 
 1. **Repositorio privado.** El agente guarda tu perfil, tus CVs ajustados y el historial en este
    repo; mantenlo privado.
@@ -137,10 +169,10 @@ Puedes cambiarlo con la variable `JOB_AGENT_MODEL`.
    | `REPO_READ_TOKEN` | no | PAT de solo lectura si quieres que analice repos privados |
 
 7. Ejecuta el workflow **job-search** a mano (Actions → Run workflow, con `dry_run` la primera vez).
-   Después corre solo a las 7:07, 12:07 y 17:07 hora Colombia (ajusta el cron en
-   `.github/workflows/job-search.yml` si estás en otra zona).
+   Para que corra solo 3 veces al día, descomenta `schedule` en `.github/workflows/job-search.yml`
+   (está desactivado porque la opción recomendada es la ejecución local; no actives ambas a la vez).
 
-## Uso local
+## Desarrollo y pruebas
 
 ```bash
 python -m venv .venv && . .venv/bin/activate

@@ -12,4 +12,20 @@ def test_env_expansion_and_defaults(tmp_path, monkeypatch):
 
 def test_repo_config_parses():
     cfg = load_config()
-    assert cfg.search.sources.linkedin.enabled and cfg.search.posted_within_days == 1
+    assert cfg.search.sources.linkedin.enabled and cfg.search.posted_within_days == 2
+
+
+def test_load_dotenv(tmp_path, monkeypatch):
+    from job_agent.config import load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("# comment\nA_KEY=one\nexport B_KEY='two words'\nC_KEY=\"3\"\nEXISTING=new\nbroken line\n")
+    monkeypatch.setenv("EXISTING", "old")
+    for k in ("A_KEY", "B_KEY", "C_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    load_dotenv(env)
+    import os
+
+    assert (os.environ["A_KEY"], os.environ["B_KEY"], os.environ["C_KEY"]) == ("one", "two words", "3")
+    assert os.environ["EXISTING"] == "old"  # real environment wins
+    load_dotenv(tmp_path / "missing.env")  # no error

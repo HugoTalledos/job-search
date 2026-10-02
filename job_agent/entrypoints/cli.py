@@ -7,7 +7,7 @@ import logging
 import sys
 
 from ..bootstrap import build_container
-from ..config import load_config
+from ..config import load_config, load_dotenv
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     prof_p.add_argument("--force", action="store_true")
     sub.add_parser("test-notify", help="Send a test notification")
     args = parser.parse_args(argv)
+    load_dotenv()  # local runs keep their secrets in .env; in GitHub Actions they come from the environment
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

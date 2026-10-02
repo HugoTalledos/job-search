@@ -91,6 +91,22 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
+def load_dotenv(path: str | os.PathLike | None = None) -> None:
+    """Load KEY=value lines from ``.env`` into the environment (local runs). Existing variables win."""
+    path = Path(path or ROOT / ".env")
+    if not path.exists():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
 def load_config(path: str | os.PathLike | None = None) -> Config:
     path = Path(path or os.environ.get("JOB_AGENT_CONFIG", ROOT / "config.yaml"))
     raw = yaml.safe_load(path.read_text()) if path.exists() else {}

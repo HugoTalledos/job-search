@@ -1,9 +1,11 @@
 name: job-search
 
+# El agente corre en local (macOS, ver scripts/macos/). Este workflow queda solo para ejecución manual.
+# Para volver a correrlo en GitHub 3 veces al día, descomenta `schedule` (cron en UTC; 12:07, 17:07 y
+# 22:07 UTC = 7:07, 12:07 y 17:07 en Colombia) y configura los secrets, incluido LINKEDIN_SESSION_B64.
 on:
-  schedule:
-    # 3 veces al día. Cron en UTC: 12:07, 17:07 y 22:07 UTC = 7:07, 12:07 y 17:07 en Colombia (UTC-5).
-    - cron: "7 12,17,22 * * *"
+  # schedule:
+  #   - cron: "7 12,17,22 * * *"
   workflow_dispatch:
     inputs:
       dry_run:

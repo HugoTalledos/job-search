@@ -7,3 +7,4 @@ config.local.yaml
 .cache/
 linkedin_session.b64
 *.b64
+logs/

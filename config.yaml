@@ -25,7 +25,7 @@ search:
   max_queries: 8                 # máximo de búsquedas por corrida (cada una es una búsqueda en LinkedIn)
 
   # 2) Filtros que aplica LinkedIn en la propia búsqueda.
-  posted_within_days: 1          # con 3 corridas al día, 1 día da solapamiento suficiente
+  posted_within_days: 2          # 2 días cubre corridas perdidas si el Mac estuvo apagado; lo ya visto se descarta igual
   work_types: []                 # remote, hybrid, on_site  (vacío = cualquiera)
   experience_levels: []          # internship, entry, associate, mid_senior, director, executive
 
