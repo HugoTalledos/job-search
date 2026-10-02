@@ -46,6 +46,11 @@ class MemorySource:
         return SourceCollection(jobs=fresh, leads=len(leads), known=len(known))
 
 
+class FailedSearchSource:
+    def collect_new(self, plan, known_keys, max_details):
+        return SourceCollection(jobs=[], leads=0, known=0, search_errors=["boom: rate limited"])
+
+
 def _plan(max_details=2):
     return CollectorPlan(search=SearchPlan(queries=[SearchQuery(keywords="backend")], posted_within_days=2),
                          max_details_per_run=max_details)
@@ -97,3 +102,10 @@ def test_collector_does_not_open_source_without_search_plan(job):
         CollectJobs(source, store).execute()
 
     assert store.events == ["plan"]
+
+
+def test_collector_reports_search_failure_instead_of_success():
+    report = CollectJobs(FailedSearchSource(), MemoryStore(_plan())).execute()
+
+    assert report.inserted == 0
+    assert report.errors == ["boom: rate limited"]

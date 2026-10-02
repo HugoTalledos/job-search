@@ -103,14 +103,17 @@ class LinkedInMcpJobSource:
     ) -> SourceCollection:
         async with AsyncExitStack() as stack:
             session = await open_mcp_session(stack, self.server)
-            ids = await self._search(session, plan)
+            ids, search_errors = await self._search_with_errors(session, plan)
             leads = [JobLead(source=self.name, external_id=job_id,
                              url=f"https://www.linkedin.com/jobs/view/{job_id}/") for job_id in ids]
             known = known_keys(leads) if leads else set()
             admitted = [lead for lead in leads if lead_key(lead) not in known][:max_details]
             log.info("[linkedin] %d unique ids, %d known, %d to fetch", len(leads), len(known), len(admitted))
             jobs, errors = await self._fetch_details(session, admitted)
-            return SourceCollection(jobs=jobs, leads=len(leads), known=len(known), detail_errors=errors)
+            return SourceCollection(
+                jobs=jobs, leads=len(leads), known=len(known),
+                search_errors=search_errors, detail_errors=errors,
+            )
 
     async def _collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]:
         async with AsyncExitStack() as stack:
@@ -137,17 +140,19 @@ class LinkedInMcpJobSource:
             t0 = time.monotonic()
             try:
                 data = await call_tool(session, "get_job_details", {"job_id": lead.external_id}, self.tool_timeout)
-            except McpToolError as exc:
+                sections = data.get("sections")
+                if not isinstance(sections, dict):
+                    raise ValueError("malformed job sections")
+                text = sections.get("job_posting")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("no job posting text")
+                posting = parse_job_posting(lead.external_id, data.get("url") or lead.url, text)
+                if not posting.description.strip():
+                    raise ValueError("empty parsed description")
+            except Exception as exc:
                 errors.append(f"{lead.external_id}: {exc}")
                 log.warning("[linkedin] detail %d/%d (%s) failed: %s", n, len(admitted), lead.external_id, exc)
                 continue
-            text = (data.get("sections") or {}).get("job_posting", "")
-            if not text:
-                errors.append(f"{lead.external_id}: no job posting text")
-                log.warning("[linkedin] detail %d/%d (%s) returned no text: %s",
-                            n, len(admitted), lead.external_id, data.get("section_errors"))
-                continue
-            posting = parse_job_posting(lead.external_id, data.get("url") or lead.url, text)
             postings.append(posting)
             log.info("[linkedin] detail %d/%d in %.0fs: %s @ %s", n, len(admitted), time.monotonic() - t0,
                      posting.title or "?", posting.company or "?")
@@ -155,7 +160,12 @@ class LinkedInMcpJobSource:
         return postings, errors
 
     async def _search(self, session: ClientSession, plan: SearchPlan) -> list[str]:
+        ids, _ = await self._search_with_errors(session, plan)
+        return ids
+
+    async def _search_with_errors(self, session: ClientSession, plan: SearchPlan) -> tuple[list[str], list[str]]:
         ids: dict[str, None] = {}  # ordered set: newest first within each query
+        failures: list[str] = []
         for query in plan.queries:
             args: dict = {
                 "keywords": query.keywords,
@@ -172,6 +182,7 @@ class LinkedInMcpJobSource:
             try:
                 data = await call_tool(session, "search_jobs", args, self.tool_timeout)
             except McpToolError as exc:  # one failing query must not stop the others
+                failures.append(f"search {query.keywords} @ {query.location}: {exc}")
                 log.warning("[linkedin] search %r @ %r failed: %s", query.keywords, query.location, exc)
                 continue
             found = [str(i) for i in data.get("job_ids") or []]
@@ -179,4 +190,4 @@ class LinkedInMcpJobSource:
                 log.info("[linkedin] %r @ %r: %s", query.keywords, query.location, errors)
             log.info("[linkedin] %r @ %r -> %d ids", query.keywords, query.location, len(found))
             ids.update(dict.fromkeys(found))
-        return list(ids)
+        return list(ids), failures

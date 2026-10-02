@@ -8,11 +8,12 @@ from job_agent.domain.models import SearchPlan, SearchQuery
 from job_agent.domain.policies import lead_key
 
 
-def _source(tmp_path, slow_id="", tool_timeout=200.0):
+def _source(tmp_path, slow_id="", tool_timeout=200.0, bad_id="", empty_id=""):
     log = tmp_path / "calls.jsonl"
     server = McpServerParams(
         name="linkedin", command=sys.executable, args=[str(Path(__file__).parent / "fake_jobs_mcp.py")],
-        env={"FAKE_MCP_LOG": str(log), "FAKE_MCP_SLOW_ID": slow_id},
+        env={"FAKE_MCP_LOG": str(log), "FAKE_MCP_SLOW_ID": slow_id,
+             "FAKE_MCP_BAD_ID": bad_id, "FAKE_MCP_EMPTY_ID": empty_id},
     )
     return LinkedInMcpJobSource(server, max_pages=1, tool_timeout=tool_timeout), log
 
@@ -101,3 +102,42 @@ def test_collect_new_reports_detail_failures_and_continues(tmp_path):
     assert len(result.detail_errors) == 1
     assert "101" in result.detail_errors[0]
     assert [call["job_id"] for call in _calls(log) if call["tool"] == "get_job_details"] == ["101", "102"]
+
+
+def test_collect_new_retries_id_with_empty_description(tmp_path):
+    from job_agent.domain.models import JobLead
+
+    plan = SearchPlan(queries=[SearchQuery(keywords="backend", location="Colombia")], posted_within_days=1)
+    first_source, _ = _source(tmp_path, empty_id="101")
+    known = set()
+
+    first = first_source.collect_new(plan, lambda leads: known, max_details=2)
+    known.update(lead_key(JobLead(source="linkedin", external_id=j.external_id)) for j in first.jobs)
+    second_source, _ = _source(tmp_path)
+    second = second_source.collect_new(plan, lambda leads: known, max_details=2)
+
+    assert [job.external_id for job in first.jobs] == ["102"]
+    assert "101" in first.detail_errors[0]
+    assert [job.external_id for job in second.jobs] == ["101"]
+
+
+def test_collect_new_isolates_malformed_detail_after_valid_detail(tmp_path):
+    source, _ = _source(tmp_path, bad_id="102")
+    plan = SearchPlan(queries=[SearchQuery(keywords="backend", location="Colombia"),
+                               SearchQuery(keywords="backend", location="Remote")], posted_within_days=1)
+
+    result = source.collect_new(plan, lambda leads: set(), max_details=3)
+
+    assert [job.external_id for job in result.jobs] == ["101", "103"]
+    assert len(result.detail_errors) == 1 and "102" in result.detail_errors[0]
+
+
+def test_collect_new_reports_failed_search_query(tmp_path):
+    source, _ = _source(tmp_path)
+    plan = SearchPlan(queries=[SearchQuery(keywords="boom", location="Remote")], posted_within_days=1)
+
+    result = source.collect_new(plan, lambda leads: set(), max_details=3)
+
+    assert result.jobs == []
+    assert len(result.search_errors) == 1
+    assert "boom" in result.search_errors[0]

@@ -1,6 +1,13 @@
 import plistlib
 import sys
 
+import os
+import shutil
+import subprocess
+import time
+
+import pytest
+
 from scripts.macos import install_schedule
 
 
@@ -27,3 +34,28 @@ def test_collector_dry_run_prints_installable_plist(monkeypatch, capsys):
     plist = plistlib.loads(capsys.readouterr().out.encode())
     assert plist["Label"].endswith("job-search-collector")
     assert plist["ProgramArguments"][1].endswith("run_collector.sh")
+
+
+@pytest.mark.parametrize("runner,command", [("run_local.sh", "run"), ("run_collector.sh", "collect")])
+def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path, runner, command):
+    scripts = tmp_path / "scripts" / "macos"
+    scripts.mkdir(parents=True)
+    shutil.copy2(install_schedule.REPO / "scripts" / "macos" / runner, scripts / runner)
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\necho "$*" >> "$TEST_RUN_LOG"\n')
+    python.chmod(0o755)
+    lock = tmp_path / ".run.lock"
+    lock.mkdir()
+    run_log = tmp_path / "calls.log"
+    process = subprocess.Popen(["/bin/bash", str(scripts / runner)], env={**os.environ, "TEST_RUN_LOG": str(run_log)})
+    try:
+        time.sleep(0.3)
+        assert process.poll() is None
+        lock.rmdir()
+        assert process.wait(timeout=5) == 0
+        assert f"-m job_agent {command}" in run_log.read_text()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)

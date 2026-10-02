@@ -13,15 +13,20 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S') inicio ==="
 
 # Evita dos corridas a la vez (p. ej. una manual mientras corre la programada).
 LOCK="$REPO/.run.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
+WAITED=0
+while ! mkdir "$LOCK" 2>/dev/null; do
   if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
     echo "Bloqueo abandonado (más de 2 h); se reemplaza."
-    rm -rf "$LOCK" && mkdir "$LOCK"
-  else
-    echo "Ya hay una corrida en curso; se omite esta."
-    exit 0
+    rm -rf "$LOCK"
+    continue
   fi
-fi
+  if [ "$WAITED" -ge 7200 ]; then
+    echo "La otra corrida no terminó tras 2 h; esta corrida falla."
+    exit 1
+  fi
+  sleep 1
+  WAITED=$((WAITED + 1))
+done
 trap 'rm -rf "$LOCK"' EXIT
 
 PYTHON="$REPO/.venv/bin/python"

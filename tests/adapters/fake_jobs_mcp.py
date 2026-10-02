@@ -45,6 +45,10 @@ async def get_job_details(job_id: str) -> dict:
         import anyio
 
         await anyio.sleep(30)  # a page that never finishes loading
+    if job_id == os.environ.get("FAKE_MCP_BAD_ID"):
+        return {"sections": ["malformed"]}
+    if job_id == os.environ.get("FAKE_MCP_EMPTY_ID"):
+        return {"sections": {"job_posting": "Acme\nEngineer\nAbout the job\n  "}}
     return {"url": f"https://www.linkedin.com/jobs/view/{job_id}/", "sections": {"job_posting": POSTINGS[job_id]}}
 
 

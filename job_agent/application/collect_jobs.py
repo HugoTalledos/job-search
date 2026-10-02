@@ -19,7 +19,8 @@ class CollectJobs:
         plan = self.store.load_plan()
         batch = self.source.collect_new(plan.search, self.store.known_keys, plan.max_details_per_run)
         report = CollectionReport(
-            leads=batch.leads, known=batch.known, fetched=len(batch.jobs), errors=batch.detail_errors.copy(),
+            leads=batch.leads, known=batch.known, fetched=len(batch.jobs),
+            errors=[*batch.search_errors, *batch.detail_errors],
         )
         for job in batch.jobs:
             try:

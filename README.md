@@ -29,7 +29,7 @@ Para preparar el buscador:
    ```
 
 La programación anterior se administra por separado con `--component legacy` (valor por defecto).
-Si ambas están activas, harán sus búsquedas respectivas. El buscador nuevo no envía notificaciones
+Si ambas están activas, cada corrida espera a que termine la otra antes de usar LinkedIn. El buscador nuevo no envía notificaciones
 hasta que se implemente el agente remoto.
 
 ## Flujo actual

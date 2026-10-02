@@ -167,6 +167,7 @@ class SourceCollection(BaseModel):
     jobs: list[JobPosting]
     leads: int
     known: int
+    search_errors: list[str] = Field(default_factory=list)
     detail_errors: list[str] = Field(default_factory=list)
 
 
