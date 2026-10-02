@@ -57,6 +57,8 @@ viven en el repo, mantenlo **privado**.
 
 ## Arquitectura hexagonal
 
+> Diagramas de componentes y de secuencia en [`docs/arquitectura.md`](docs/arquitectura.md).
+
 Cada herramienta que usa el agente (Claude, servidores MCP, git/GitHub, Telegram, sistema de
 archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con qué herramienta habla.
 

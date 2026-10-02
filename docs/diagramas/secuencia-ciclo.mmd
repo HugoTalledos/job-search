@@ -1,0 +1,80 @@
+sequenceDiagram
+    autonumber
+    actor Cron as GitHub Actions
+    participant CLI as CLI
+    participant RSC as RunSearchCycle
+    participant EP as EnsureProfile
+    participant Store as Persistencia (data/, output/)
+    participant Src as JobSource (LinkedIn MCP, web)
+    participant LLM as Claude (matcher, selector, tailor)
+    participant Notif as Notifier (Telegram)
+    actor User as Tú
+
+    Cron->>CLI: python -m job_agent run
+    CLI->>RSC: execute()
+
+    rect rgba(127,127,127,0.08)
+    Note over RSC,EP: 1. Perfil
+    RSC->>EP: execute()
+    EP->>Store: leer CV base y heads de los repos
+    alt CV y repos sin cambios y perfil vigente
+        Store-->>EP: perfil guardado
+    else algo cambió o el perfil es viejo
+        EP->>LLM: inferir perfil (CV + evidencia de repos)
+        LLM-->>EP: Profile
+        EP->>Store: guardar data/profile.json
+    end
+    EP-->>RSC: Profile
+    end
+
+    rect rgba(127,127,127,0.08)
+    Note over RSC,Src: 2. Búsqueda
+    RSC->>Store: URLs ya vistas
+    RSC->>RSC: armar SearchCriteria (roles, keywords, ubicaciones)
+    loop cada fuente configurada
+        RSC->>Src: search(criteria)
+        Src-->>RSC: ofertas (o error, sin detener las demás)
+    end
+    RSC->>RSC: quitar duplicadas, vistas y empresas excluidas
+    end
+
+    loop cada oferta nueva (máx. max_jobs_per_run)
+        rect rgba(127,127,127,0.08)
+        Note over RSC,LLM: 3. Afinidad
+        RSC->>LLM: score(oferta, perfil, CV)
+        LLM-->>RSC: JobMatch (puntaje, motivos, brechas, resume_undersells)
+        end
+
+        opt puntaje ≥ umbral y el CV no te hace justicia
+            rect rgba(127,127,127,0.08)
+            Note over RSC,Store: 4. Hoja de vida
+            RSC->>Store: versiones del catálogo (mismo CV base)
+            alt hay versiones candidatas
+                RSC->>LLM: choose(oferta, candidatas)
+                LLM-->>RSC: reuse | adapt | create
+            end
+            alt reuse
+                RSC->>Store: registrar uso y ubicar la versión
+            else adapt
+                RSC->>Store: cargar versión de partida
+                RSC->>LLM: tailor(..., starting_from)
+                LLM-->>RSC: TailoredResume (cambios mínimos)
+                RSC->>Store: guardar versión nueva (adapted_from)
+            else create (o sin candidatas)
+                RSC->>LLM: tailor(oferta, perfil, CV base)
+                LLM-->>RSC: TailoredResume
+                RSC->>Store: guardar resume.md/html/pdf + README + version.json
+            end
+            end
+        end
+
+        opt puntaje ≥ umbral de notificación
+            RSC->>Notif: notify(alerta)
+            Notif->>User: mensaje + PDF por Telegram
+        end
+        RSC->>Store: marcar como vista, historial (matches.jsonl)
+    end
+
+    RSC-->>CLI: CycleReport
+    CLI-->>Cron: fin
+    Cron->>Store: git commit + push de data/ y output/

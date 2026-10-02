@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    participant RSC as RunSearchCycle
+    participant MJS as McpJobSource
+    participant MCP as Servidor MCP (LinkedIn)
+    participant Agent as claude_search_agent
+    participant Claude as API de Anthropic
+
+    RSC->>MJS: search(criteria)
+    MJS->>MCP: lanzar por stdio e initialize()
+    MJS->>MCP: list_tools()
+    MCP-->>MJS: search_jobs, get_job_details, ...
+    MJS->>Agent: run(herramientas MCP + submit_jobs, criteria)
+    loop hasta que Claude llame submit_jobs (máx. 40 turnos)
+        Agent->>Claude: mensajes + herramientas
+        Claude-->>Agent: tool_use (p. ej. search_jobs "python backend", "Remote")
+        Agent->>MCP: call_tool(...)
+        MCP-->>Agent: resultados de LinkedIn
+        Agent->>Claude: tool_result
+    end
+    Claude-->>Agent: tool_use submit_jobs(jobs)
+    Agent->>Agent: validar cada JobPosting
+    Agent-->>MJS: lista de ofertas
+    MJS->>MCP: cerrar sesión
+    MJS-->>RSC: ofertas

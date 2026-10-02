@@ -1,0 +1,66 @@
+flowchart LR
+    GHA["GitHub Actions<br/>cron 3 veces al día"]
+    CLI["entrypoints/cli.py<br/>adaptador de entrada"]
+    BOOT["bootstrap.py<br/>raíz de composición<br/>(lee config.yaml y conecta<br/>cada puerto con su adaptador)"]
+
+    subgraph CORE["Núcleo · sin dependencias de infraestructura"]
+        direction TB
+        subgraph APP["application/ · casos de uso"]
+            direction TB
+            RSC["RunSearchCycle"]
+            EP["EnsureProfile"]
+        end
+        subgraph DOM["domain/"]
+            direction TB
+            MOD["models<br/>Profile · JobPosting · JobMatch<br/>TailoredResume · ResumeVersion"]
+            POL["policies<br/>MatchingPolicy · ReusePolicy<br/>SearchPreferences · job_key"]
+        end
+    end
+
+    subgraph PORTS["application/ports.py · puertos"]
+        direction TB
+        P_CAND(["Datos del candidato<br/>ResumeSource · CodeRepositoryReader"])
+        P_JOB(["Mercado laboral<br/>JobSource"])
+        P_LLM(["Razonamiento<br/>ProfileInferer · JobMatcher<br/>ResumeSelector · ResumeTailor"])
+        P_STO(["Almacenamiento<br/>ProfileStore · ApplicationStore<br/>SeenJobsRepository · MatchHistory"])
+        P_NOT(["Avisos<br/>Notifier"])
+    end
+
+    subgraph ADAPTERS["adapters/ · adaptadores de salida"]
+        direction TB
+        A_CAND["resume/FileResumeSource<br/>code_repositories/GitRepositoryReader"]
+        A_JOB["job_sources/ McpJobSource (uno por servidor)<br/>WebSearchJobSource<br/>→ claude_search_agent"]
+        A_LLM["llm/ ClaudeProfileInferer · ClaudeJobMatcher<br/>ClaudeResumeSelector · ClaudeResumeTailor"]
+        A_STO["persistence/ JSON y archivos<br/>+ resume/markdown_renderer (MD→HTML→PDF)"]
+        A_NOT["notifications/ TelegramNotifier<br/>ConsoleNotifier (dry-run)"]
+    end
+
+    subgraph EXT["Sistemas externos"]
+        direction TB
+        E_CAND["resume/base.md<br/>GitHub y remotos git"]
+        E_JOB["Servidor MCP de LinkedIn<br/>(+ otros MCP, búsqueda web)"]
+        E_LLM["API de Anthropic (Claude)"]
+        E_STO[("Repo: data/ · output/")]
+        E_NOT["Telegram"]
+    end
+
+    GHA --> CLI --> APP
+    CLI --> BOOT
+    BOOT -. crea .-> APP
+    BOOT -. instancia .-> ADAPTERS
+    RSC --> EP
+    APP --> DOM
+    APP --> PORTS
+
+    P_CAND -. implementado por .- A_CAND
+    P_LLM -. implementado por .- A_LLM
+    P_JOB -. implementado por .- A_JOB
+    P_STO -. implementado por .- A_STO
+    P_NOT -. implementado por .- A_NOT
+
+    A_CAND --> E_CAND
+    A_LLM --> E_LLM
+    A_JOB --> E_JOB
+    A_JOB -- el agente razona con --> E_LLM
+    A_STO --> E_STO
+    A_NOT --> E_NOT
