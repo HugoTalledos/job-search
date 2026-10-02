@@ -23,12 +23,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "scripts" / "macos" / "run_local.sh"
+COLLECTOR_RUNNER = REPO / "scripts" / "macos" / "run_collector.sh"
 PROTECTED = ("Documents", "Desktop", "Downloads", "Library/Mobile Documents")
 
 
-def default_label() -> str:
+def default_label(component: str = "legacy") -> str:
     user = re.sub(r"[^a-z0-9]+", "", os.environ.get("USER", "user").lower()) or "user"
-    return f"com.{user}.job-search"
+    suffix = ".job-search-collector" if component == "collector" else ".job-search"
+    return f"com.{user}{suffix}"
 
 
 def parse_times(values: list[str]) -> list[dict[str, int]]:
@@ -50,11 +52,12 @@ def tool_path() -> str:
     return ":".join(dict.fromkeys(dirs))
 
 
-def build_plist(label: str, times: list[dict[str, int]]) -> dict:
+def build_plist(label: str, times: list[dict[str, int]], component: str = "legacy") -> dict:
     logs = REPO / "logs"
+    runner = COLLECTOR_RUNNER if component == "collector" else RUNNER
     return {
         "Label": label,
-        "ProgramArguments": ["/bin/bash", str(RUNNER)],
+        "ProgramArguments": ["/bin/bash", str(runner)],
         "WorkingDirectory": str(REPO),
         "StartCalendarInterval": times,
         "EnvironmentVariables": {"PATH": tool_path(), "HOME": str(Path.home()), "LANG": "en_US.UTF-8"},
@@ -69,7 +72,7 @@ def launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=check)
 
 
-def preflight() -> list[str]:
+def preflight(component: str = "legacy") -> list[str]:
     problems = []
     if not (REPO / ".venv" / "bin" / "python").exists():
         problems.append("No existe .venv: ejecuta primero scripts/macos/setup.sh")
@@ -80,7 +83,10 @@ def preflight() -> list[str]:
     if not (Path.home() / ".linkedin-mcp" / "cookies.json").exists():
         problems.append("No hay sesión de LinkedIn: ejecuta 'uvx mcp-server-linkedin@latest --login'")
     home = Path.home()
-    for label, path in [("El repo", REPO), *storage_dirs()]:
+    paths = [("El repo", REPO)]
+    if component == "legacy":
+        paths += storage_dirs()
+    for label, path in paths:
         if any(path.is_relative_to(home / p) for p in PROTECTED):
             problems.append(
                 f"{label} está en {path}: macOS impide a las tareas programadas acceder a Documentos, "
@@ -106,16 +112,18 @@ def storage_dirs() -> list[tuple[str, Path]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--times", nargs="+", default=["08:00", "14:00", "22:00"], help="Horas HH:MM (24 h)")
-    parser.add_argument("--label", default=default_label())
+    parser.add_argument("--component", choices=["legacy", "collector"], default="legacy")
+    parser.add_argument("--label")
     parser.add_argument("--dry-run", action="store_true", help="Mostrar el plist sin instalar nada")
     parser.add_argument("--uninstall", action="store_true")
     args = parser.parse_args()
+    label = args.label or default_label(args.component)
 
-    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{args.label}.plist"
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     domain = f"gui/{os.getuid()}"
 
     if args.dry_run:
-        sys.stdout.write(plistlib.dumps(build_plist(args.label, parse_times(args.times))).decode())
+        sys.stdout.write(plistlib.dumps(build_plist(label, parse_times(args.times), args.component)).decode())
         return 0
     if sys.platform != "darwin":
         sys.exit("Este instalador es para macOS.")
@@ -123,27 +131,28 @@ def main() -> int:
     if args.uninstall:
         launchctl("bootout", domain, str(plist_path), check=False)
         plist_path.unlink(missing_ok=True)
-        print(f"Programación eliminada ({args.label}).")
+        print(f"Programación eliminada ({label}).")
         return 0
 
-    if problems := preflight():
+    if problems := preflight(args.component):
         print("Antes de programar el agente:\n- " + "\n- ".join(problems))
         return 1
 
     (REPO / "logs").mkdir(exist_ok=True)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_bytes(plistlib.dumps(build_plist(args.label, parse_times(args.times))))
+    plist_path.write_bytes(plistlib.dumps(build_plist(label, parse_times(args.times), args.component)))
     launchctl("bootout", domain, str(plist_path), check=False)  # replace a previous installation
     result = launchctl("bootstrap", domain, str(plist_path), check=False)
     if result.returncode != 0:
         sys.exit(f"launchctl bootstrap falló: {result.stderr.strip()}")
-    launchctl("enable", f"{domain}/{args.label}", check=False)
+    launchctl("enable", f"{domain}/{label}", check=False)
 
-    print(f"Agente programado a las {', '.join(args.times)} ({args.label}).")
-    print(f"  Correr ahora:     launchctl kickstart {domain}/{args.label}")
-    print(f"  Ver el log:       tail -f {REPO}/logs/run-$(date +%Y-%m-%d).log")
-    print(f"  Estado:           launchctl print {domain}/{args.label} | head -20")
-    print("  Desinstalar:      python3 scripts/macos/install_schedule.py --uninstall")
+    log_prefix = "collector" if args.component == "collector" else "run"
+    print(f"Agente programado a las {', '.join(args.times)} ({label}).")
+    print(f"  Correr ahora:     launchctl kickstart {domain}/{label}")
+    print(f"  Ver el log:       tail -f {REPO}/logs/{log_prefix}-$(date +%Y-%m-%d).log")
+    print(f"  Estado:           launchctl print {domain}/{label} | head -20")
+    print(f"  Desinstalar:      python3 scripts/macos/install_schedule.py --component {args.component} --uninstall")
     return 0
 
 

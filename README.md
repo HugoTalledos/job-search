@@ -1,5 +1,39 @@
 # job-search — agente de búsqueda de empleo
 
+## Buscador local con Firestore
+
+El monorepo incluye un buscador local para la nueva arquitectura. Corre en tu Mac, usa tu sesión de
+LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. El agente remoto que evaluará
+esas ofertas, enviará avisos por Telegram y generará CV al responder es una etapa posterior. El comando
+anterior `run` sigue disponible durante la transición.
+
+Para preparar el buscador:
+
+1. Crea un proyecto Firebase con una base de [Cloud Firestore](https://firebase.google.com/docs/firestore/quickstart).
+2. Instala las dependencias con `scripts/macos/setup.sh`. Conserva tu `.env` si ya existe; agrega
+   `FIRESTORE_PROJECT_ID` y `GOOGLE_APPLICATION_CREDENTIALS` (ruta absoluta a un JSON de cuenta de
+   servicio guardado fuera del repositorio). El buscador usa estas credenciales para acceder a Firestore.
+3. Genera el plan inicial a partir del perfil local existente y `config.yaml`:
+   ```bash
+   .venv/bin/python -m job_agent seed-search-plan
+   ```
+   Si aún no existe `data/profile.json`, créalo primero con `.venv/bin/python -m job_agent profile --force`.
+   Publicar el plan es una preparación única; cada corrida normal solo lo lee de Firestore.
+4. Ejecuta una búsqueda manual para comprobar la conexión y ver el resultado en `logs/collector-AAAA-MM-DD.log`:
+   ```bash
+   scripts/macos/run_collector.sh
+   ```
+5. Programa las tres búsquedas diarias (08:00, 14:00 y 22:00 por defecto):
+   ```bash
+   python3 scripts/macos/install_schedule.py --component collector
+   ```
+
+La programación anterior se administra por separado con `--component legacy` (valor por defecto).
+Si ambas están activas, harán sus búsquedas respectivas. El buscador nuevo no envía notificaciones
+hasta que se implemente el agente remoto.
+
+## Flujo actual
+
 Agente que corre en tu Mac **3 veces al día**, busca ofertas de trabajo, filtra las que mejor encajan con tu perfil
 y, cuando una oferta encaja pero tu hoja de vida no te hace justicia, **crea una versión ajustada
 de tu CV** para esa oferta. Después te envía una notificación por **Telegram** con un resumen de la oferta
