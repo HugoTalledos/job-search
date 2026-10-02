@@ -23,7 +23,7 @@ profile_refresh_days: 30
 search:
   # 1) Plan de búsqueda (determinista): palabras clave × ubicaciones.
   #    Palabras clave = extra_keywords + los primeros cargos objetivo de tu perfil + sus keywords.
-  locations: ["Remote", "Colombia"]
+  locations: ["Remote", "Colombia", "España"]
   extra_keywords: []
   max_roles_from_profile: 3
   max_queries: 8                 # máximo de búsquedas por corrida (cada una es una búsqueda en LinkedIn)
@@ -35,7 +35,7 @@ search:
 
   # 3) Filtros deterministas del agente, antes de llamar a Claude.
   #    (además: ids ya vistos, duplicados por empresa+cargo normalizados, publicaciones antiguas)
-  exclude_companies: []          # se comparan normalizados: "Acme Inc." = "ACME"
+  exclude_companies: ["Puntored", "puntored"]          # se comparan normalizados: "Acme Inc." = "ACME"
   exclude_title_keywords: []     # p. ej. ["intern", "practicante", "lead"]
 
   # 4) Presupuestos por corrida.
@@ -64,8 +64,8 @@ resume_reuse:
 # Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match),
 # elegir una hoja de vida para reutilizar (select) y ajustarla (tailor).
 llm:
-  provider: anthropic          # anthropic | openrouter
-  model:                       # vacío con anthropic = claude-opus-5-5. Con openrouter es obligatorio.
+  provider: openrouter          # anthropic | openrouter
+  model: qwen/qwen3.7-flash                      # vacío con anthropic = claude-opus-5-5. Con openrouter es obligatorio.
   # Para OpenRouter (clave en OPENROUTER_API_KEY de .env), usa el id exacto de openrouter.ai/models, p. ej.:
   #   provider: openrouter
   #   model: anthropic/claude-sonnet-4.5
