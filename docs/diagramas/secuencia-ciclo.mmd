@@ -6,7 +6,7 @@ sequenceDiagram
     participant EP as EnsureProfile
     participant Store as Persistencia (data/, output/)
     participant Src as JobSource (LinkedIn vía MCP)
-    participant LLM as Claude (matcher, selector, tailor)
+    participant LLM as LLM (matcher, selector, tailor)
     participant Notif as Notifier (Telegram)
     actor User as Tú
 
@@ -53,7 +53,7 @@ sequenceDiagram
 
     loop cada oferta que pasó los filtros (máx. max_jobs_per_run)
         rect rgba(127,127,127,0.08)
-        Note over RSC,LLM: 4. Afinidad (único juicio de Claude sobre la oferta)
+        Note over RSC,LLM: 4. Afinidad (único juicio del LLM sobre la oferta)
         RSC->>LLM: score(oferta, perfil, CV)
         LLM-->>RSC: JobMatch (puntaje, motivos, brechas, resume_undersells)
         end

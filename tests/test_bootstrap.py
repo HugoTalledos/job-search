@@ -18,3 +18,23 @@ def test_container_wires_configured_adapters(monkeypatch):
 
     cfg.search.sources.linkedin.enabled = False
     assert build_container(cfg).run_search_cycle.sources == []
+
+
+def test_llm_provider_and_per_task_models(monkeypatch):
+    from job_agent.adapters.llm import AnthropicStructuredModel, OpenRouterStructuredModel
+
+    monkeypatch.delenv("JOB_AGENT_MODEL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    cfg = load_config()
+    cfg.llm.provider = "openrouter"
+    cfg.llm.model = "vendor/default-model"
+    cfg.llm.models = {"tailor": "vendor/strong-model"}
+    uc = build_container(cfg).run_search_cycle
+    assert isinstance(uc.matcher.model, OpenRouterStructuredModel)
+    assert uc.matcher.model.name == "openrouter/vendor/default-model"
+    assert uc.selector.model is uc.matcher.model  # same model -> shared instance
+    assert uc.tailor.model.name == "openrouter/vendor/strong-model"
+
+    cfg.llm.provider, cfg.llm.model, cfg.llm.models = "anthropic", None, {}
+    model = build_container(cfg).run_search_cycle.matcher.model
+    assert isinstance(model, AnthropicStructuredModel) and model.name == "anthropic/claude-opus-5-5"

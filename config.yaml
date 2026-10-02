@@ -56,3 +56,18 @@ matching:
 resume_reuse:
   enabled: true
   max_candidates: 20        # versiones más recientes que se le muestran al selector
+
+# Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match),
+# elegir una hoja de vida para reutilizar (select) y ajustarla (tailor).
+llm:
+  provider: anthropic          # anthropic | openrouter
+  model:                       # vacío con anthropic = claude-opus-5-5. Con openrouter es obligatorio.
+  # Para OpenRouter (clave en OPENROUTER_API_KEY de .env), usa el id exacto de openrouter.ai/models, p. ej.:
+  #   provider: openrouter
+  #   model: anthropic/claude-sonnet-4.5
+  # Opcional: un modelo distinto por tarea (p. ej. uno barato para puntuar, uno mejor para ajustar el CV):
+  models: {}
+  #   match: google/gemini-2.5-flash
+  #   tailor: anthropic/claude-sonnet-4.5
+  openrouter:
+    reasoning: false           # true = enviar el nivel de esfuerzo a modelos con razonamiento

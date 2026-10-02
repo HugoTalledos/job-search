@@ -30,7 +30,7 @@ flowchart LR
         direction TB
         A_CAND["resume/FileResumeSource<br/>code_repositories/GitRepositoryReader"]
         A_JOB["job_sources/ LinkedInMcpJobSource<br/>llama search_jobs y get_job_details<br/>+ parser de texto (sin LLM)"]
-        A_LLM["llm/ ClaudeProfileInferer · ClaudeJobMatcher<br/>ClaudeResumeSelector · ClaudeResumeTailor"]
+        A_LLM["llm/ LlmProfileInferer · LlmJobMatcher<br/>LlmResumeSelector · LlmResumeTailor<br/>sobre Anthropic u OpenRouter"]
         A_STO["persistence/ JSON y archivos<br/>+ resume/markdown_renderer (MD→HTML→PDF)"]
         A_NOT["notifications/ TelegramNotifier<br/>ConsoleNotifier (dry-run)"]
     end
@@ -39,7 +39,7 @@ flowchart LR
         direction TB
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
         E_JOB["Servidor MCP de LinkedIn"]
-        E_LLM["API de Anthropic (Claude)"]
+        E_LLM["API de Anthropic (Claude)<br/>u OpenRouter (cualquier modelo)"]
         E_STO[("Repo: data/ · output/")]
         E_NOT["Telegram"]
     end

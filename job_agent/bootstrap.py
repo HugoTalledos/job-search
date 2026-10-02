@@ -7,7 +7,15 @@ from dataclasses import dataclass
 
 from .adapters.code_repositories import GitRepositoryReader
 from .adapters.job_sources import LinkedInMcpJobSource, McpServerParams
-from .adapters.llm import ClaudeJobMatcher, ClaudeProfileInferer, ClaudeResumeSelector, ClaudeResumeTailor
+from .adapters.llm import (
+    AnthropicStructuredModel,
+    LlmJobMatcher,
+    LlmProfileInferer,
+    LlmResumeSelector,
+    LlmResumeTailor,
+    OpenRouterStructuredModel,
+    StructuredModel,
+)
 from .adapters.notifications import ConsoleNotifier, TelegramNotifier
 from .adapters.persistence import (
     FileSystemApplicationStore,
@@ -18,7 +26,7 @@ from .adapters.persistence import (
 from .adapters.resume import FileResumeSource
 from .application import EnsureProfile, RunSearchCycle
 from .application.ports import JobSource, Notifier
-from .config import ROOT, Config
+from .config import ROOT, Config, LlmConfig
 from .domain.models import RepoRef
 from .domain.policies import JobFilter, MatchingPolicy, ReusePolicy, SearchPreferences
 
@@ -39,6 +47,24 @@ def build_job_sources(cfg: Config) -> list[JobSource]:
     return sources
 
 
+def build_llm(llm: LlmConfig, task: str, cache: dict[str, StructuredModel] | None = None) -> StructuredModel:
+    """Model for one LLM task (profile, match, select, tailor); tasks sharing a model share the instance."""
+    cache = {} if cache is None else cache
+    model = llm.model_for(task)
+    key = f"{llm.provider}:{model}"
+    if key not in cache:
+        if llm.provider == "openrouter":
+            cache[key] = OpenRouterStructuredModel(
+                model or "",
+                os.environ.get("OPENROUTER_API_KEY", ""),
+                base_url=llm.openrouter.base_url,
+                reasoning=llm.openrouter.reasoning,
+            )
+        else:
+            cache[key] = AnthropicStructuredModel(model) if model else AnthropicStructuredModel()
+    return cache[key]
+
+
 def build_notifier(dry_run: bool) -> Notifier:
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if dry_run or not (token and chat_id):
@@ -53,6 +79,7 @@ def _web_url_base() -> str | None:
 
 def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
     data = ROOT / "data"
+    models: dict[str, StructuredModel] = {}
     resume = FileResumeSource(cfg.resume_file)
     ensure_profile = EnsureProfile(
         resume=resume,
@@ -62,7 +89,7 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
             include_forks=cfg.include_forks,
             max_repos=cfg.max_repos,
         ),
-        inferer=ClaudeProfileInferer(),
+        inferer=LlmProfileInferer(build_llm(cfg.llm, "profile", models)),
         store=JsonProfileStore(data / "profile.json"),
         refresh_days=cfg.profile_refresh_days,
         preferred_locations=cfg.search.locations,
@@ -72,9 +99,9 @@ def build_container(cfg: Config, *, dry_run: bool = False) -> Container:
         ensure_profile=ensure_profile,
         resume=resume,
         sources=build_job_sources(cfg),
-        matcher=ClaudeJobMatcher(),
-        tailor=ClaudeResumeTailor(),
-        selector=ClaudeResumeSelector(),
+        matcher=LlmJobMatcher(build_llm(cfg.llm, "match", models)),
+        tailor=LlmResumeTailor(build_llm(cfg.llm, "tailor", models)),
+        selector=LlmResumeSelector(build_llm(cfg.llm, "select", models)),
         applications=FileSystemApplicationStore(ROOT / "output", ROOT, _web_url_base()),
         notifier=notifier,
         seen=JsonSeenJobsRepository(data / "state.json"),

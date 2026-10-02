@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from ..bootstrap import build_container
+from ..bootstrap import build_container, build_notifier
 from ..config import load_config, load_dotenv
 
 
@@ -28,18 +28,24 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the Telegram bot token
-    container = build_container(load_config(args.config), dry_run=getattr(args, "dry_run", False))
+    if args.command == "test-notify":  # needs neither the LLM nor the job sources
+        notifier = build_notifier(dry_run=False)
+        send_text = getattr(notifier, "send_text", None)
+        if send_text is None:
+            print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set", file=sys.stderr)
+            return 1
+        send_text("✅ job-search agent: notificaciones configuradas correctamente.")
+        return 0
 
+    try:
+        container = build_container(load_config(args.config), dry_run=getattr(args, "dry_run", False))
+    except ValueError as exc:  # configuration problems (missing model id, API key...)
+        print(f"Error de configuración: {exc}", file=sys.stderr)
+        return 2
     if args.command == "run":
         report = container.run_search_cycle.execute()
         for error in report.errors:
             print(f"error: {error}", file=sys.stderr)
     elif args.command == "profile":
         print(container.ensure_profile.execute(force=args.force).model_dump_json(indent=2))
-    elif args.command == "test-notify":
-        send_text = getattr(container.notifier, "send_text", None)
-        if send_text is None:
-            print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set", file=sys.stderr)
-            return 1
-        send_text("✅ job-search agent: notificaciones configuradas correctamente.")
     return 0

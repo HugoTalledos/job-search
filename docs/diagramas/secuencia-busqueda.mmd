@@ -4,7 +4,7 @@ sequenceDiagram
     participant Seen as Ofertas vistas (data/state.json)
     participant LI as LinkedInMcpJobSource
     participant MCP as Servidor MCP de LinkedIn
-    participant Claude as Claude (JobMatcher)
+    participant Claude as LLM (JobMatcher)
 
     RSC->>RSC: plan = (extra_keywords + cargos + keywords del perfil) × ubicaciones
     RSC->>LI: collect(plan, admit, max_details_per_run)

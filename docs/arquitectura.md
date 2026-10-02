@@ -2,8 +2,8 @@
 
 Fuentes de los diagramas: `docs/diagramas/*.mmd` (Mermaid). También hay versiones PNG en la misma carpeta.
 
-Principio: **primero lo determinista, Claude al final**. La búsqueda y todos los filtros son código
-(sin LLM); Claude solo evalúa el encaje de las ofertas que sobreviven y, cuando hace falta, la hoja de vida.
+Principio: **primero lo determinista, el LLM al final**. La búsqueda y todos los filtros son código
+(sin LLM); el LLM (Claude u otro modelo vía OpenRouter, según `llm` en `config.yaml`) solo evalúa el encaje de las ofertas que sobreviven y, cuando hace falta, la hoja de vida.
 
 ## Diagrama de componentes
 
@@ -44,7 +44,7 @@ flowchart LR
         direction TB
         A_CAND["resume/FileResumeSource<br/>code_repositories/GitRepositoryReader"]
         A_JOB["job_sources/ LinkedInMcpJobSource<br/>llama search_jobs y get_job_details<br/>+ parser de texto (sin LLM)"]
-        A_LLM["llm/ ClaudeProfileInferer · ClaudeJobMatcher<br/>ClaudeResumeSelector · ClaudeResumeTailor"]
+        A_LLM["llm/ LlmProfileInferer · LlmJobMatcher<br/>LlmResumeSelector · LlmResumeTailor<br/>sobre Anthropic u OpenRouter"]
         A_STO["persistence/ JSON y archivos<br/>+ resume/markdown_renderer (MD→HTML→PDF)"]
         A_NOT["notifications/ TelegramNotifier<br/>ConsoleNotifier (dry-run)"]
     end
@@ -53,7 +53,7 @@ flowchart LR
         direction TB
         E_CAND["resume/base.md<br/>GitHub y remotos git"]
         E_JOB["Servidor MCP de LinkedIn"]
-        E_LLM["API de Anthropic (Claude)"]
+        E_LLM["API de Anthropic (Claude)<br/>u OpenRouter (cualquier modelo)"]
         E_STO[("Repo: data/ · output/")]
         E_NOT["Telegram"]
     end
@@ -83,11 +83,14 @@ flowchart LR
 |---|---|---|
 | `ResumeSource` | leer tu CV base | `FileResumeSource` (`resume/base.md`, .txt o .pdf) |
 | `CodeRepositoryReader` | listar repos y extraer evidencia | `GitRepositoryReader` (GitHub + cualquier remoto git) |
-| `ProfileInferer` | inferir el perfil | `ClaudeProfileInferer` |
+| `ProfileInferer` | inferir el perfil | `LlmProfileInferer` |
 | `JobSource` | buscar ofertas (determinista) | `LinkedInMcpJobSource` (herramientas del servidor MCP llamadas directamente) |
-| `JobMatcher` | puntuar cada oferta | `ClaudeJobMatcher` |
-| `ResumeSelector` | decidir reutilizar / adaptar / crear | `ClaudeResumeSelector` |
-| `ResumeTailor` | crear o adaptar la hoja de vida | `ClaudeResumeTailor` |
+| `JobMatcher` | puntuar cada oferta | `LlmJobMatcher` |
+| `ResumeSelector` | decidir reutilizar / adaptar / crear | `LlmResumeSelector` |
+| `ResumeTailor` | crear o adaptar la hoja de vida | `LlmResumeTailor` |
+
+Los cuatro adaptadores `Llm*` comparten los prompts (`adapters/llm/prompts.py`) y delegan el transporte en un
+`StructuredModel`: `AnthropicStructuredModel` o `OpenRouterStructuredModel`, elegido por `llm.provider`.
 | `ProfileStore` | guardar el perfil | `JsonProfileStore` (`data/profile.json`) |
 | `ApplicationStore` | catálogo de hojas de vida | `FileSystemApplicationStore` (`output/…/version.json`) |
 | `SeenJobsRepository` | no repetir ofertas | `JsonSeenJobsRepository` (`data/state.json`) |
@@ -107,7 +110,7 @@ sequenceDiagram
     participant EP as EnsureProfile
     participant Store as Persistencia (data/, output/)
     participant Src as JobSource (LinkedIn vía MCP)
-    participant LLM as Claude (matcher, selector, tailor)
+    participant LLM as LLM (matcher, selector, tailor)
     participant Notif as Notifier (Telegram)
     actor User as Tú
 
@@ -154,7 +157,7 @@ sequenceDiagram
 
     loop cada oferta que pasó los filtros (máx. max_jobs_per_run)
         rect rgba(127,127,127,0.08)
-        Note over RSC,LLM: 4. Afinidad (único juicio de Claude sobre la oferta)
+        Note over RSC,LLM: 4. Afinidad (único juicio del LLM sobre la oferta)
         RSC->>LLM: score(oferta, perfil, CV)
         LLM-->>RSC: JobMatch (puntaje, motivos, brechas, resume_undersells)
         end
@@ -217,7 +220,7 @@ sequenceDiagram
     participant Seen as Ofertas vistas (data/state.json)
     participant LI as LinkedInMcpJobSource
     participant MCP as Servidor MCP de LinkedIn
-    participant Claude as Claude (JobMatcher)
+    participant Claude as LLM (JobMatcher)
 
     RSC->>RSC: plan = (extra_keywords + cargos + keywords del perfil) × ubicaciones
     RSC->>LI: collect(plan, admit, max_details_per_run)
@@ -259,7 +262,7 @@ sequenceDiagram
 | 2 | Agente, antes de pedir detalle | id ya procesado en corridas anteriores o repetido en esta corrida |
 | 3 | Agente, sobre el detalle (`JobFilter`) | empresa excluida (normalizada: "Acme Inc." = "ACME"), palabra excluida en el título (palabra completa), modalidad no deseada, publicación antigua, sin descripción |
 | 4 | Agente, sobre el detalle | misma empresa + cargo normalizados que otra oferta de esta corrida o ya procesada con otro id (reposts) |
-| 5 | Claude | encaje con tu perfil: puntaje 0-100 |
+| 5 | LLM | encaje con tu perfil: puntaje 0-100 |
 
 El texto de cada oferta se convierte en campos con un parser determinista
 (`adapters/job_sources/linkedin_text.py`). Si no reconoce el formato, deja vacíos título, empresa o

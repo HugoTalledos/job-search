@@ -34,6 +34,26 @@ repos git ─► │             (solo se rehace si cambian o pasan N días)    
 Las reglas de negocio (umbrales para notificar/ajustar, identidad y duplicados de ofertas, vigencia
 del perfil, criterios de búsqueda) viven en `job_agent/domain/policies.py`.
 
+## Proveedor del modelo (Anthropic u OpenRouter)
+
+Las tareas que usan un LLM (inferir el perfil, puntuar ofertas, elegir una hoja de vida para reutilizar y
+ajustarla) comparten los mismos prompts y piden una respuesta con esquema fijo; el proveedor solo cambia
+el transporte. Se elige en `config.yaml`:
+
+```yaml
+llm:
+  provider: openrouter                 # o anthropic (por defecto, claude-opus-5-5)
+  model: anthropic/claude-sonnet-4.5   # id exacto de openrouter.ai/models
+  models:                              # opcional: un modelo por tarea (profile, match, select, tailor)
+    match: google/gemini-2.5-flash
+```
+
+y la clave en `.env` (`OPENROUTER_API_KEY` o `ANTHROPIC_API_KEY`). Con OpenRouter el agente pide salida
+estructurada (`response_format: json_schema`) y que solo se use un proveedor que la soporte; si el modelo
+no la soporta, describe el esquema en el prompt. En ambos casos valida la respuesta y, si no es válida,
+reintenta una vez indicando el error. Los modelos pequeños o gratuitos pueden fallar en esa validación o
+dar puntajes y hojas de vida de peor calidad.
+
 ## Reutilización de hojas de vida
 
 Cada CV ajustado se guarda en `output/AAAA-MM-DD/<empresa>-<cargo>-<id>/` con `resume.md`/`.html`/`.pdf`,
@@ -65,10 +85,10 @@ archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con q
 ```
                  adaptador de entrada                      adaptadores de salida
                 ┌────────────────────┐                  ┌──────────────────────────────────┐
- GitHub Actions │ entrypoints/cli.py │                  │ llm/            Claude            │
-(cron 3×/día)─►│                    │                  │   ClaudeProfileInferer           │
-                └─────────┬──────────┘                  │   ClaudeJobMatcher               │
-                          │                             │   ClaudeResumeTailor / Selector  │
+ GitHub Actions │ entrypoints/cli.py │                  │ llm/  Anthropic u OpenRouter      │
+(cron 3×/día)─►│                    │                  │   LlmProfileInferer               │
+                └─────────┬──────────┘                  │   LlmJobMatcher                  │
+                          │                             │   LlmResumeTailor / Selector     │
               ┌───────────▼───────────────┐  puertos    │ job_sources/                      │
               │ application/              │◄───────────►│   LinkedInMcpJobSource (sin LLM)  │
               │   EnsureProfile           │ (ports.py)  │                                   │
@@ -163,7 +183,7 @@ de Anthropic; en tu Mac solo corre un Chromium oculto unos minutos por corrida (
 
    | Secret | Obligatorio | Uso |
    |---|---|---|
-   | `ANTHROPIC_API_KEY` | sí | Claude |
+   | `ANTHROPIC_API_KEY` u `OPENROUTER_API_KEY` | sí | el LLM, según `llm.provider` |
    | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | sí | notificaciones |
    | `LINKEDIN_SESSION_B64` | para LinkedIn | sesión del MCP |
    | `REPO_READ_TOKEN` | no | PAT de solo lectura si quieres que analice repos privados |

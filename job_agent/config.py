@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -61,6 +61,23 @@ class ResumeReuseConfig(BaseModel):
     max_candidates: int = 20
 
 
+class OpenRouterConfig(BaseModel):
+    base_url: str = "https://openrouter.ai/api/v1"
+    reasoning: bool = False  # send the task's effort as OpenRouter's `reasoning.effort` (reasoning models)
+
+
+class LlmConfig(BaseModel):
+    """Which provider and model(s) the LLM tasks use."""
+
+    provider: Literal["anthropic", "openrouter"] = "anthropic"
+    model: str | None = None  # default for every task; anthropic falls back to claude-opus-5-5
+    models: dict[Literal["profile", "match", "select", "tailor"], str] = Field(default_factory=dict)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
+
+    def model_for(self, task: str) -> str | None:
+        return self.models.get(task) or os.environ.get("JOB_AGENT_MODEL") or self.model
+
+
 class Config(BaseModel):
     resume_path: str = "resume/base.md"
     github_user: str | None = None
@@ -70,6 +87,7 @@ class Config(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     matching: MatchingConfig = Field(default_factory=MatchingConfig)
     resume_reuse: ResumeReuseConfig = Field(default_factory=ResumeReuseConfig)
+    llm: LlmConfig = Field(default_factory=LlmConfig)
     profile_refresh_days: int = 7
     language: str = "es"
 
