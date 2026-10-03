@@ -52,7 +52,7 @@ class SearchConfig(BaseModel):
 
 
 class MatchingConfig(BaseModel):
-    min_score_to_notify: int = 70
+    min_score_to_notify: int = Field(default=70, ge=0, le=100)
     min_score_to_tailor: int = 70
 
 

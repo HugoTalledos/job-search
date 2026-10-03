@@ -2,13 +2,14 @@
 
 ## Webhook de entrada para la inferencia
 
-`job_agent` expone `POST /webhooks/inference` para iniciar la evaluación de ofertas en segundo
+`job_agent` expone `POST /webhooks/inference` para iniciar la evaluación y recomendación de ofertas en segundo
 plano. Una petición autorizada recibe `200` sin cuerpo cuando se programa el trabajo; ese código no
 confirma que la evaluación haya terminado. Una API key ausente o incorrecta recibe `401` sin iniciar
 trabajo.
 
-Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY` y
-`OPENROUTER_API_KEY` en el entorno (o en `.env` para una ejecución local). Instala las dependencias
+Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY`,
+`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en el entorno (o en `.env` para
+una ejecución local). Instala las dependencias
 de `requirements.txt` y arranca el servicio desde la raíz del repositorio:
 
 ```bash
@@ -31,20 +32,29 @@ los campos de `Profile` (`full_name`, `headline`, `seniority`, `years_of_experie
 `notable_projects` y `strengths_missing_from_resume`). Cada elemento de `skills` tiene `name`,
 `level` y `evidence`. El servicio solo lee ese documento; no genera ni actualiza el perfil.
 
-Por cada documento `job_postings/{id}` con `status: "PENDING"`, el servicio compara el campo `job`
-con el perfil mediante Jev (`typesafe/jev-1.13`). También acepta como pendiente un documento antiguo
-sin `status`. Al obtener un resultado, actualiza el mismo documento con `status: "EVALUATED"`,
-`score` (entero de 0 a 100), `confidence` (0 a 1), `score_model` y `evaluated_at`. Conserva el campo
-`job`. Una oferta que falla sigue pendiente; vuelve a notificar el webhook para reintentarla. Las
-ofertas evaluadas no se puntúan de nuevo. Las ejecuciones se serializan dentro de cada instancia del
-servicio. El trabajo vive en el proceso: si este termina durante una evaluación, no hay recuperación
-automática ni cola persistente; vuelve a notificar para procesar los pendientes.
+Por cada documento `job_postings/{id}` con `status: "PENDING"`, el servicio primero enriquece la
+oferta a partir de su `description`. Guarda `required_language`, `salary_range` (vacíos si no hay
+datos claros) y `enriched_at` en el mismo documento. Este paso usa Jev para elegir entre fragmentos
+literales de la descripción y se ejecuta por separado del motor de score. Si `enriched_at` ya existe,
+reutiliza el enriquecimiento. Luego compara `job` con el perfil mediante Jev (`typesafe/jev-1.13`)
+y guarda `score` (entero de 0 a 100), `confidence` (0 a 1), `score_model` y `evaluated_at`.
+También acepta como pendiente un documento antiguo sin `status`.
+
+Si el score queda bajo `matching.min_score_to_notify` de `config.yaml` (70 por defecto), cambia el
+estado a `EVALUATED`. Si alcanza el umbral, cambia a `PENDING_NOTIFICATION` y envía un mensaje a
+Telegram con cargo, empresa, ubicación, enlace y score; incluye idioma y rango salarial solo cuando
+están disponibles. Cuando Telegram confirma el envío, cambia a `NOTIFIED` y guarda `notified_at`.
+Un fallo de enriquecimiento o score deja la oferta `PENDING`, lista para procesarse en una futura
+notificación normal al webhook. Un fallo de Telegram deja `PENDING_NOTIFICATION`: este webhook no
+reintenta esos envíos, que quedan para otro mecanismo. Conserva `job` y los metadatos del buscador.
+Las ejecuciones se serializan dentro de cada instancia del servicio; no hay coordinación entre
+instancias ni cola persistente. El `200` del webhook no confirma la entrega del mensaje.
 
 ## Buscador local con Firestore
 
 El componente [`local_collector/`](local_collector/) corre en tu Mac, usa tu sesión de
-LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. La evaluación con Jev ya está
-disponible en el webhook; los avisos por Telegram y la generación de CV son etapas posteriores. El comando
+LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. La evaluación con Jev y los
+avisos por Telegram están disponibles en el webhook; la generación de CV es una etapa posterior. El comando
 anterior `run` sigue disponible durante la transición. `job_contracts/` contiene los modelos de los
 documentos compartidos; el buscador tiene entrada, configuración y entorno Python propios.
 
@@ -72,7 +82,7 @@ Para preparar el buscador:
 
 La programación anterior se administra por separado con `--component legacy` (valor por defecto).
 Si ambas están activas, cada corrida espera a que termine la otra antes de usar LinkedIn. El buscador nuevo no envía notificaciones
-por sí mismo; el webhook inicia la evaluación cuando recibe una petición.
+por sí mismo; el webhook inicia la evaluación y el envío cuando recibe una petición.
 
 ```text
 local_collector/          # búsqueda local, LinkedIn MCP, Firestore y CLI

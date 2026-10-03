@@ -2,18 +2,16 @@ import logging
 
 import pytest
 
-from job_agent.scoring.models import PendingPosting, ScoreResult
+from job_agent.scoring.models import PendingPosting, PostingEnrichment, ScoreResult
 from job_agent.scoring.run import ScorePendingJobs
 
 
-RESULT = ScoreResult(score=83, confidence=0.7, model="typesafe/jev-1.13")
+RESULT = ScoreResult(83, 0.7, "typesafe/jev-1.13")
 
 
 class Profiles:
     def __init__(self, profile, events, error=None):
-        self.profile = profile
-        self.events = events
-        self.error = error
+        self.profile, self.events, self.error = profile, events, error
 
     def load(self):
         self.events.append("profile")
@@ -24,105 +22,188 @@ class Profiles:
 
 class Postings:
     def __init__(self, pending, events, error=None):
-        self.pending = {p.document_id: p for p in pending}
-        self.events = events
-        self.error = error
-        self.write_error_for = set()
-        self.saved = []
+        self.items = {p.document_id: p for p in pending}
+        self.status = {p.document_id: "PENDING" for p in pending}
+        self.events, self.error = events, error
+        self.fail_stage = None
 
     def list_pending(self):
         self.events.append("postings")
         if self.error:
             raise self.error
-        return list(self.pending.values())
+        return [self.items[key] for key, status in self.status.items() if status == "PENDING"]
 
-    def mark_evaluated(self, document_id, result):
-        if document_id in self.write_error_for:
+    def mark_enriched(self, document_id, enrichment):
+        self.events.append(f"enriched:{document_id}")
+        if self.fail_stage == "enriched" and document_id == "first":
             raise RuntimeError("write failed")
-        self.saved.append((document_id, result))
-        del self.pending[document_id]
+        self.items[document_id] = PendingPosting(document_id, self.items[document_id].job, enrichment)
+
+    def mark_scored(self, document_id, result, notify):
+        self.events.append(f"scored:{document_id}:{notify}")
+        if self.fail_stage == "scored" and document_id == "first":
+            raise RuntimeError("write failed")
+        self.status[document_id] = "PENDING_NOTIFICATION" if notify else "EVALUATED"
+
+    def mark_notified(self, document_id):
+        self.events.append(f"notified:{document_id}")
+        if self.fail_stage == "notified" and document_id == "first":
+            raise RuntimeError("write failed")
+        self.status[document_id] = "NOTIFIED"
 
 
 class Scorer:
-    def __init__(self):
-        self.calls = []
-        self.fail_for = set()
+    def __init__(self, events, result=RESULT):
+        self.events, self.result = events, result
+        self.error_for = set()
 
     def score(self, profile, job):
-        self.calls.append((profile, job))
-        if job.external_id in self.fail_for:
+        self.events.append(f"score:{job.external_id}")
+        if job.external_id in self.error_for:
             raise RuntimeError("SECRET-JOB-DESCRIPTION")
-        return RESULT
+        return self.result
 
 
-def test_run_reads_profile_before_postings_and_skips_empty_collection(profile):
+class Enricher:
+    def __init__(self, events, result=PostingEnrichment("English B2", "USD 2,000 - 3,000")):
+        self.events, self.result = events, result
+        self.error_for = set()
+
+    def enrich(self, job):
+        self.events.append(f"enrich:{job.external_id}")
+        if job.external_id in self.error_for:
+            raise RuntimeError("enrichment failed")
+        return self.result
+
+
+class Notifier:
+    def __init__(self, events):
+        self.events = events
+        self.fail = False
+
+    def notify(self, job, result, enrichment):
+        self.events.append(f"notify:{job.external_id}:{result.score}:{enrichment.required_language}")
+        if self.fail:
+            raise RuntimeError("Telegram unavailable")
+
+
+def make_run(profile, postings, scorer, enricher, notifier, threshold=70):
+    return ScorePendingJobs(Profiles(profile, postings.events), postings, scorer, enricher, notifier, threshold)
+
+
+def test_empty_collection_does_no_enrichment_score_or_send(profile):
     events = []
-    scorer = Scorer()
-
-    report = ScorePendingJobs(Profiles(profile, events), Postings([], events), scorer).execute()
-
+    postings = Postings([], events)
+    report = make_run(profile, postings, Scorer(events), Enricher(events), Notifier(events)).execute()
     assert events == ["profile", "postings"]
-    assert scorer.calls == []
-    assert (report.evaluated, report.failed) == (0, 0)
+    assert (report.evaluated, report.failed, report.notified) == (0, 0, 0)
 
 
-def test_run_saves_score_under_original_document_id(profile, job):
+def test_high_score_persists_before_sending_and_confirms_notification(profile, job):
     events = []
-    postings = Postings([PendingPosting("original-id", job)], events)
-    scorer = Scorer()
+    postings = Postings([PendingPosting("original", job)], events)
+    report = make_run(profile, postings, Scorer(events), Enricher(events), Notifier(events)).execute()
 
-    report = ScorePendingJobs(Profiles(profile, events), postings, scorer).execute()
-
-    assert scorer.calls == [(profile, job)]
-    assert postings.saved == [("original-id", RESULT)]
-    assert (report.evaluated, report.failed) == (1, 0)
-
-
-def test_scorer_failure_leaves_posting_for_retry_and_continues(profile, job, caplog):
-    other = job.model_copy(update={"external_id": "124"})
-    postings = Postings([PendingPosting("first", job), PendingPosting("second", other)], [])
-    scorer = Scorer()
-    scorer.fail_for.add(job.external_id)
-    run = ScorePendingJobs(Profiles(profile, []), postings, scorer)
-
-    with caplog.at_level(logging.ERROR):
-        report = run.execute()
-
-    assert (report.evaluated, report.failed) == (1, 1)
-    assert postings.saved == [("second", RESULT)]
-    assert "first" in postings.pending
-    assert "first" in caplog.text
-    assert "SECRET-JOB-DESCRIPTION" not in caplog.text
-
-    scorer.fail_for.clear()
-    assert run.execute().evaluated == 1
-    assert postings.pending == {}
+    assert events == [
+        "profile", "postings", "enrich:123", "enriched:original", "score:123",
+        "scored:original:True", "notify:123:83:English B2", "notified:original",
+    ]
+    assert postings.status["original"] == "NOTIFIED"
+    assert (report.evaluated, report.failed, report.notified) == (1, 0, 1)
 
 
-def test_write_failure_leaves_posting_for_retry_and_continues(profile, job):
-    other = job.model_copy(update={"external_id": "124"})
-    postings = Postings([PendingPosting("first", job), PendingPosting("second", other)], [])
-    postings.write_error_for.add("first")
-    run = ScorePendingJobs(Profiles(profile, []), postings, Scorer())
+def test_threshold_is_inclusive_and_low_offer_is_only_evaluated(profile, job):
+    events = []
+    postings = Postings([PendingPosting("low", job)], events)
+    scorer = Scorer(events, ScoreResult(69, 0.7, "typesafe/jev-1.13"))
+    report = make_run(profile, postings, scorer, Enricher(events), Notifier(events)).execute()
+
+    assert postings.status["low"] == "EVALUATED"
+    assert report.notified == 0
+    assert not any(event.startswith("notify:") for event in events)
+
+    events.clear()
+    postings = Postings([PendingPosting("equal", job)], events)
+    scorer.result = ScoreResult(70, 0.7, "typesafe/jev-1.13")
+    report = make_run(profile, postings, scorer, Enricher(events), Notifier(events)).execute()
+    assert postings.status["equal"] == "NOTIFIED"
+    assert report.notified == 1
+
+
+def test_saved_empty_enrichment_skips_jev_extraction(profile, job):
+    events = []
+    postings = Postings([PendingPosting("saved", job, PostingEnrichment())], events)
+    make_run(profile, postings, Scorer(events), Enricher(events), Notifier(events)).execute()
+    assert "enrich:123" not in events
+    assert "enriched:saved" not in events
+    assert "notify:123:83:None" in events
+
+
+def test_telegram_failure_keeps_pending_notification_and_next_run_does_not_retry(profile, job):
+    events = []
+    postings = Postings([PendingPosting("offer", job)], events)
+    notifier = Notifier(events)
+    notifier.fail = True
+    run = make_run(profile, postings, Scorer(events), Enricher(events), notifier)
 
     report = run.execute()
+    assert postings.status["offer"] == "PENDING_NOTIFICATION"
+    assert (report.evaluated, report.failed, report.notified) == (1, 1, 0)
+    events.clear()
+    notifier.fail = False
+    run.execute()
+    assert events == ["profile", "postings"]
+    assert postings.status["offer"] == "PENDING_NOTIFICATION"
 
-    assert (report.evaluated, report.failed) == (1, 1)
-    assert "first" in postings.pending
-    assert postings.saved == [("second", RESULT)]
-    postings.write_error_for.clear()
-    assert run.execute().evaluated == 1
-    assert postings.pending == {}
+
+def test_score_failure_stays_pending_and_next_webhook_reuses_enrichment(profile, job, caplog):
+    events = []
+    postings = Postings([PendingPosting("offer", job)], events)
+    scorer = Scorer(events)
+    scorer.error_for.add(job.external_id)
+    run = make_run(profile, postings, scorer, Enricher(events), Notifier(events))
+
+    with caplog.at_level(logging.ERROR):
+        assert run.execute().failed == 1
+    assert postings.status["offer"] == "PENDING"
+    assert "SECRET-JOB-DESCRIPTION" not in caplog.text
+    events.clear()
+    scorer.error_for.clear()
+    assert run.execute().notified == 1
+    assert "enrich:123" not in events
+    assert postings.status["offer"] == "NOTIFIED"
+
+
+@pytest.mark.parametrize("stage", ["enrichment", "enriched", "scored", "notified"])
+def test_stage_failure_preserves_state_and_continues_other_offers(profile, job, stage):
+    events = []
+    other = job.model_copy(update={"external_id": "124"})
+    postings = Postings([PendingPosting("first", job), PendingPosting("second", other)], events)
+    scorer = Scorer(events)
+    enricher = Enricher(events)
+    notifier = Notifier(events)
+    if stage == "enrichment":
+        enricher.error_for.add(job.external_id)
+    else:
+        postings.fail_stage = stage
+
+    report = make_run(profile, postings, scorer, enricher, notifier).execute()
+
+    assert report.failed >= 1
+    assert postings.status["first"] == ("PENDING_NOTIFICATION" if stage == "notified" else "PENDING")
+    assert "enrich:124" in events
+    assert postings.status["second"] == "NOTIFIED"
+    if stage == "scored":
+        assert "notify:123:83:English B2" not in events
 
 
 @pytest.mark.parametrize("source", ["profile", "postings"])
-def test_input_failure_aborts_before_scoring(profile, source):
+def test_input_failure_aborts_before_work(profile, source):
     events = []
     profiles = Profiles(profile, events, RuntimeError("profile unavailable") if source == "profile" else None)
     postings = Postings([], events, RuntimeError("postings unavailable") if source == "postings" else None)
-    scorer = Scorer()
 
     with pytest.raises(RuntimeError, match="unavailable"):
-        ScorePendingJobs(profiles, postings, scorer).execute()
+        ScorePendingJobs(profiles, postings, Scorer(events), Enricher(events), Notifier(events), 70).execute()
 
-    assert scorer.calls == []
+    assert not any(event.startswith(("enrich:", "score:", "notify:")) for event in events)

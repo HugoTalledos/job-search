@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from job_agent.config import load_config
+import pytest
+from pydantic import ValidationError
+
+from job_agent.config import MatchingConfig, load_config
+
+
+@pytest.mark.parametrize("threshold", [-1, 101])
+def test_notification_threshold_must_be_within_score_range(threshold):
+    with pytest.raises(ValidationError):
+        MatchingConfig(min_score_to_notify=threshold)
 
 
 def test_env_expansion_and_defaults(tmp_path, monkeypatch):

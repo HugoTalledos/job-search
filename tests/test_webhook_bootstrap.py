@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 from google.cloud import firestore
 
-from job_agent.scoring.models import ScoreResult
+from job_agent.config import Config, MatchingConfig
+from job_agent.scoring.models import PostingEnrichment, ScoreResult
 
 
 class Snapshot:
@@ -55,9 +56,12 @@ def webhook(monkeypatch):
     monkeypatch.setenv("JOB_AGENT_WEBHOOK_API_KEY", "fixture-key")
     monkeypatch.setenv("FIRESTORE_PROJECT_ID", "fixture-project")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fixture-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-fixture-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     monkeypatch.setattr(firestore, "Client", lambda **kwargs: FakeFirestoreClient())
     module = importlib.import_module("job_agent.webhook")
     monkeypatch.setattr(module, "load_dotenv", lambda: None)
+    monkeypatch.setattr(module, "load_config", lambda: Config(), raising=False)
     return module
 
 
@@ -82,6 +86,14 @@ def test_webhook_requires_openrouter_key_at_startup(webhook, monkeypatch):
         webhook.build_webhook_app()
 
 
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"])
+def test_webhook_requires_telegram_credentials_at_startup(webhook, monkeypatch, missing):
+    monkeypatch.delenv(missing)
+
+    with pytest.raises(ValueError, match=missing):
+        webhook.build_webhook_app()
+
+
 def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch, profile, job):
     projects = []
     client = FakeFirestoreClient()
@@ -89,6 +101,8 @@ def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch,
     client.docs["job_postings/original"] = {"job": job.model_dump(), "status": "PENDING"}
     monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: projects.append(kwargs["project"]) or client)
     scored = []
+    enriched = []
+    notified = []
 
     class FakeScorer:
         def score(self, candidate, posting):
@@ -96,6 +110,18 @@ def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch,
             return ScoreResult(score=80, confidence=0.8, model="typesafe/jev-1.13")
 
     monkeypatch.setattr(webhook, "JevScoringTool", lambda api_key: FakeScorer())
+
+    class FakeEnricher:
+        def enrich(self, posting):
+            enriched.append(posting)
+            return PostingEnrichment("English B2", "USD 2,000 - 3,000")
+
+    class FakeNotifier:
+        def notify(self, posting, result, enrichment):
+            notified.append((posting, result.score, enrichment.required_language))
+
+    monkeypatch.setattr(webhook, "JevOfferEnricher", lambda api_key: FakeEnricher(), raising=False)
+    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: FakeNotifier(), raising=False)
 
     app = webhook.build_webhook_app()
     with TestClient(app) as http:
@@ -106,9 +132,30 @@ def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch,
     assert first.status_code == second.status_code == 200
     assert first.content == second.content == b""
     assert scored == [(profile, job)]
-    assert client.docs["job_postings/original"]["status"] == "EVALUATED"
+    assert enriched == [job]
+    assert notified == [(job, 80, "English B2")]
+    assert client.docs["job_postings/original"]["status"] == "NOTIFIED"
     assert client.docs["job_postings/original"]["score"] == 80
+    assert client.docs["job_postings/original"]["required_language"] == "English B2"
     assert client.docs["job_postings/original"]["job"] == job.model_dump()
+
+
+def test_webhook_uses_configured_notification_threshold(webhook, monkeypatch, profile, job):
+    client = FakeFirestoreClient()
+    client.docs["profiles/current"] = profile.model_dump()
+    client.docs["job_postings/low"] = {"job": job.model_dump(), "status": "PENDING"}
+    monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(webhook, "load_config", lambda: Config(matching=MatchingConfig(min_score_to_notify=90)))
+    monkeypatch.setattr(webhook, "JevOfferEnricher", lambda key: type("Enricher", (), {"enrich": lambda self, job: PostingEnrichment()})(), raising=False)
+    monkeypatch.setattr(webhook, "JevScoringTool", lambda key: type("Scorer", (), {"score": lambda self, profile, job: ScoreResult(80, 0.8, "typesafe/jev-1.13")})())
+    sent = []
+    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: type("Notifier", (), {"notify": lambda self, *args: sent.append(args)})(), raising=False)
+
+    response = TestClient(webhook.build_webhook_app()).post("/webhooks/inference", headers={"X-API-Key": "fixture-key"})
+
+    assert response.status_code == 200
+    assert client.docs["job_postings/low"]["status"] == "EVALUATED"
+    assert sent == []
 
 
 def test_webhook_exposes_firestore_credential_failure_at_startup(webhook, monkeypatch):

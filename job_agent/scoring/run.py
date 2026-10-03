@@ -1,11 +1,11 @@
-"""Evaluate each pending offer independently and save successful scores."""
+"""Enrich, evaluate, and notify each pending offer independently."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 
-from .ports import PendingPostingStore, ProfileReader, ScoringTool
+from .ports import OfferEnricher, OfferNotifier, PendingPostingStore, ProfileReader, ScoringTool
 
 log = logging.getLogger(__name__)
 
@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 class ScoreReport:
     evaluated: int = 0
     failed: int = 0
+    notified: int = 0
 
 
 class ScorePendingJobs:
@@ -22,21 +23,36 @@ class ScorePendingJobs:
         profile_reader: ProfileReader,
         postings: PendingPostingStore,
         scorer: ScoringTool,
+        enricher: OfferEnricher,
+        notifier: OfferNotifier,
+        min_score_to_notify: int,
     ) -> None:
         self.profile_reader = profile_reader
         self.postings = postings
         self.scorer = scorer
+        self.enricher = enricher
+        self.notifier = notifier
+        self.min_score_to_notify = min_score_to_notify
 
     def execute(self) -> ScoreReport:
         profile = self.profile_reader.load()
         pending = self.postings.list_pending()
-        evaluated = failed = 0
+        evaluated = failed = notified = 0
         for posting in pending:
             try:
+                enrichment = posting.enrichment
+                if enrichment is None:
+                    enrichment = self.enricher.enrich(posting.job)
+                    self.postings.mark_enriched(posting.document_id, enrichment)
                 result = self.scorer.score(profile, posting.job)
-                self.postings.mark_evaluated(posting.document_id, result)
+                should_notify = result.score >= self.min_score_to_notify
+                self.postings.mark_scored(posting.document_id, result, notify=should_notify)
                 evaluated += 1
+                if should_notify:
+                    self.notifier.notify(posting.job, result, enrichment)
+                    self.postings.mark_notified(posting.document_id)
+                    notified += 1
             except Exception as exc:
                 failed += 1
                 log.error("Failed to evaluate posting %s (%s)", posting.document_id, type(exc).__name__)
-        return ScoreReport(evaluated=evaluated, failed=failed)
+        return ScoreReport(evaluated=evaluated, failed=failed, notified=notified)
