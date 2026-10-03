@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from job_contracts import CollectorPlan, SearchPreferences
 
@@ -21,8 +20,8 @@ class PreferenceDraft(BaseModel):
     preferences: SearchPreferences
     diff: list[str]
     status: DraftStatus = "PENDING"
-    created_at: datetime
-    expires_at: datetime
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
 
 
 class DraftResolution(BaseModel):
@@ -31,3 +30,21 @@ class DraftResolution(BaseModel):
     preferences_version: int | None = None
     plan: CollectorPlan | None = None  # the plan written, when one was
     plan_kept: bool = False  # applied but no keywords: previous plan kept
+
+
+class PreferencesView(BaseModel):
+    preferences: SearchPreferences | None
+    plan: CollectorPlan | None
+
+
+class Proposal(BaseModel):
+    kind: Literal["draft", "rejected", "missing_preferences"]
+    draft: PreferenceDraft | None = None
+    plan_preview: CollectorPlan | None = None
+    total_queries: int = 0
+    problems: list[str] = []
+
+
+class RebuildResult(BaseModel):
+    status: Literal["rebuilt", "no_keywords", "no_preferences"]
+    plan: CollectorPlan | None = None

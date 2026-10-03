@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from typing import Literal
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from job_contracts import CollectorPlan, SearchPreferences
 
 from ..domain.policies import SearchBudgets, build_search_plan
-from .ports import ProfileStore, SearchSettingsStore
+from ..domain.preference_edits import apply_operations, preference_diff
+from .ports import PreferenceInterpreter, ProfileStore, SearchSettingsStore
+from .preference_models import DraftResolution, PreferenceDraft, PreferencesView, Proposal, RebuildResult
+
+DRAFT_TTL = timedelta(hours=24)
 
 
 class ManageSearchPreferences:
@@ -19,7 +24,7 @@ class ManageSearchPreferences:
         store: SearchSettingsStore,
         profiles: ProfileStore,
         budgets: SearchBudgets,
-        interpreter: object | None = None,  # PreferenceInterpreter port, introduced with the interpreter
+        interpreter: PreferenceInterpreter | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         new_id: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
@@ -30,11 +35,57 @@ class ManageSearchPreferences:
         self.clock = clock
         self.new_id = new_id
 
-    def _compile(self, preferences: SearchPreferences) -> CollectorPlan | None:
+    def _profile(self):
         stored = self.profiles.load()
-        profile = stored.profile if stored is not None else None
-        return build_search_plan(preferences, profile, self.budgets, self.clock()).plan
+        return stored.profile if stored is not None else None
+
+    def _compile(self, preferences: SearchPreferences) -> CollectorPlan | None:
+        return build_search_plan(preferences, self._profile(), self.budgets, self.clock()).plan
 
     def seed(self, preferences: SearchPreferences, *, force: bool) -> bool:
         """Publish the initial preferences and their plan; False if some exist and ``force`` is not set."""
         return self.store.seed(preferences, self._compile, force=force, now=self.clock())
+
+    def show(self) -> PreferencesView:
+        return PreferencesView(preferences=self.store.load_preferences(), plan=self.store.load_plan())
+
+    def propose(self, request: str, chat_id: str) -> Proposal:
+        """Interpret a free-text request into a pending draft; the text itself is never stored."""
+        if self.interpreter is None:
+            raise RuntimeError("ManageSearchPreferences.propose requires a preference interpreter")
+        current = self.store.load_preferences()
+        if current is None:
+            return Proposal(kind="missing_preferences")
+        outcome = apply_operations(current, self.interpreter.interpret(current, request))
+        if outcome.preferences is None:
+            return Proposal(kind="rejected", problems=outcome.problems)
+        now = self.clock()
+        draft = PreferenceDraft(
+            draft_id=self.new_id(), chat_id=chat_id, base_version=current.version,
+            preferences=outcome.preferences, diff=preference_diff(current, outcome.preferences),
+            created_at=now, expires_at=now + DRAFT_TTL,
+        )
+        self.store.create_draft(draft)
+        build = build_search_plan(outcome.preferences, self._profile(), self.budgets, now)
+        return Proposal(
+            kind="draft", draft=draft, plan_preview=build.plan, total_queries=build.total_queries,
+            problems=outcome.problems,
+        )
+
+    def resolve(self, draft_id: str, chat_id: str, action: Literal["apply", "cancel"]) -> DraftResolution:
+        profile = self._profile()
+        now = self.clock()
+        return self.store.resolve_draft(
+            draft_id, chat_id, action, now,
+            compile=lambda p: build_search_plan(p, profile, self.budgets, now).plan,
+        )
+
+    def rebuild_plan(self) -> RebuildResult:
+        preferences = self.store.load_preferences()
+        if preferences is None:
+            return RebuildResult(status="no_preferences")
+        plan = self._compile(preferences)
+        if plan is None:
+            return RebuildResult(status="no_keywords")
+        self.store.save_plan(plan)
+        return RebuildResult(status="rebuilt", plan=plan)

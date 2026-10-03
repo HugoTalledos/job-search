@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from job_agent.application.preference_models import DraftResolution
 from job_agent.domain.models import Profile, RepoEvidence, RepoRef, StoredProfile
 
 
@@ -50,3 +51,55 @@ class MemoryProfileStore:
 
     def save(self, stored):
         self.stored = stored
+
+
+class MemorySearchSettings:
+    """In-memory SearchSettingsStore mirroring the Firestore adapter's draft semantics."""
+
+    def __init__(self):
+        self.prefs = None
+        self.plan = None
+        self.drafts: dict = {}
+
+    def load_preferences(self):
+        return self.prefs
+
+    def load_plan(self):
+        return self.plan
+
+    def seed(self, preferences, compile, *, force, now):
+        if self.prefs is not None and not force:
+            return False
+        self.prefs = preferences.model_copy(update={"version": 1, "updated_at": now})
+        self.plan = compile(self.prefs) or self.plan
+        return True
+
+    def save_plan(self, plan):
+        self.plan = plan
+
+    def create_draft(self, draft):
+        self.drafts[draft.draft_id] = draft
+
+    def resolve_draft(self, draft_id, chat_id, action, now, compile):
+        draft = self.drafts.get(draft_id)
+        if draft is None or draft.chat_id != chat_id:
+            return DraftResolution(status="not_found")
+        if draft.status != "PENDING":
+            return DraftResolution(status="already_resolved", previous_status=draft.status)
+        if action == "cancel":
+            draft.status = "CANCELLED"
+            return DraftResolution(status="cancelled")
+        if now >= draft.expires_at:
+            draft.status = "EXPIRED"
+            return DraftResolution(status="expired")
+        if self.prefs.version != draft.base_version:
+            draft.status = "EXPIRED"
+            return DraftResolution(status="stale", preferences_version=self.prefs.version)
+        self.prefs = draft.preferences.model_copy(update={"version": draft.base_version + 1, "updated_at": now})
+        plan = compile(self.prefs)
+        if plan is not None:
+            self.plan = plan
+        draft.status = "APPLIED"
+        return DraftResolution(
+            status="applied", preferences_version=self.prefs.version, plan=plan, plan_kept=plan is None
+        )
