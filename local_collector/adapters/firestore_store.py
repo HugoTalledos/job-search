@@ -40,6 +40,7 @@ class FirestoreCollectorStore:
                 "source": job.source,
                 "external_id": job.external_id,
                 "job": job.model_dump(),
+                "status": "PENDING",
                 "ingested_at": datetime.now(timezone.utc),
             })
         except Conflict:

@@ -106,6 +106,7 @@ def test_firestore_creates_complete_posting_once(job):
     saved = client.docs[f"job_postings/{job_key(job)}"]
     assert saved["source"] == job.source and saved["external_id"] == job.external_id
     assert saved["job"]["description"] == job.description
+    assert saved["status"] == "PENDING"
     assert "ingested_at" in saved
     assert len(client.docs) == 1
 
