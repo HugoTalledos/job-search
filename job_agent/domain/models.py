@@ -7,7 +7,6 @@ why the fields carry descriptions. Nothing here knows about Claude, MCP, git, Te
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -40,10 +39,6 @@ class Profile(BaseModel):
     strengths_missing_from_resume: list[str] = Field(
         description="Things the repositories prove that the resume does not mention or undersells"
     )
-
-
-class JobSearchResult(BaseModel):
-    jobs: list[JobPosting]
 
 
 class JobRequirement(BaseModel):
@@ -101,19 +96,6 @@ class TailoredResume(BaseModel):
     summary_for_candidate: str = Field(description="2-3 sentence summary of the modifications, in Spanish")
 
 
-class ReuseDecision(BaseModel):
-    """Whether an already tailored resume can serve a new posting."""
-
-    action: Literal["reuse", "adapt", "create"] = Field(
-        description="reuse: an existing version already covers the key requirements and is in the posting's "
-        "language; adapt: one is close and needs small changes; create: none is close enough"
-    )
-    version_id: str = Field(description="id of the chosen version for reuse/adapt; empty string for create")
-    covered_requirements: list[str] = Field(description="Key requirements of the posting the version already shows")
-    missing_requirements: list[str] = Field(description="Key requirements the version does not show")
-    rationale: str = Field(description="One or two sentences explaining the decision, in Spanish")
-
-
 # --- Entities and value objects that never go through the LLM -------------------------------------
 
 
@@ -139,78 +121,3 @@ class StoredProfile(BaseModel):
     built_at: datetime
     repos_checked_at: datetime | None = None  # last time repository changes were looked up
     repositories: list[RepoEvidence] = Field(default_factory=list)
-
-
-class ResumeUse(BaseModel):
-    job_key: str
-    title: str
-    company: str
-    at: datetime
-
-
-class ResumeVersion(BaseModel):
-    """Catalogue entry of a tailored resume, used to decide whether it can be reused."""
-
-    id: str
-    job_key: str
-    job_title: str
-    company: str
-    language: str
-    highlights: list[str]
-    base_fingerprint: str = Field(description="Fingerprint of the base resume this version was derived from")
-    created_at: datetime
-    adapted_from: str | None = None
-    used_for: list[ResumeUse] = Field(default_factory=list)
-
-
-class SavedApplication(BaseModel):
-    """Where a tailored resume lives: folder, file to attach, web link."""
-
-    version_id: str
-    folder: str
-    attachment: Path | None = None
-    link: str | None = None
-
-
-ResumeOrigin = Literal["created", "adapted", "reused"]
-
-
-class JobAlert(BaseModel):
-    """Everything the candidate is told about one posting."""
-
-    job: JobPosting
-    match: JobMatch
-    tailored: TailoredResume | None = None  # the changes made in this cycle (created / adapted)
-    application: SavedApplication | None = None
-    resume_origin: ResumeOrigin | None = None
-    source_version: ResumeVersion | None = None  # version reused or adapted
-    reuse_rationale: str | None = None
-    resume_failed: bool = False  # tailoring was attempted but no resume could be produced
-
-
-class MatchRecord(BaseModel):
-    at: datetime
-    key: str
-    title: str
-    company: str
-    url: str
-    source: str
-    score: int
-    verdict: str
-    tailored: bool
-    resume_origin: str | None = None
-    resume_dir: str | None = None
-
-
-class CycleReport(BaseModel):
-    leads: int = 0  # ids returned by the searches
-    known_leads: int = 0  # discarded before fetching details (already seen or repeated in this run)
-    fetched: int = 0  # details fetched
-    filtered: dict[str, int] = Field(default_factory=dict)  # deterministic filter -> postings discarded
-    candidates: int = 0  # passed every deterministic filter (sent to Claude, up to max_jobs_per_run)
-    scored: int = 0
-    notified: int = 0
-    tailored: int = 0
-    adapted: int = 0
-    reused: int = 0
-    errors: list[str] = Field(default_factory=list)

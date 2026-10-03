@@ -17,7 +17,7 @@ repositories: []               # repos adicionales en cualquier remoto git, p. e
 # - si cambias resume/base.md se rehace en la siguiente corrida;
 # - si solo cambian tus repos, se rehace como máximo cada profile_refresh_days días;
 # - si nada cambió, no se rehace nunca.
-# Para forzarlo:  .venv/bin/python -m job_agent profile --force   o   run --refresh-profile
+# Para forzarlo: /build_profile en Telegram.
 profile_refresh_days: 30
 
 search:
@@ -40,8 +40,6 @@ search:
 
   # 4) Presupuestos por corrida.
   max_details_per_run: 20        # ofertas nuevas cuyo detalle se descarga de LinkedIn (~10-30 s cada una)
-  max_jobs_per_run: 25           # ofertas que Claude evalúa (solo las que pasaron los filtros)
-
   sources:
     linkedin:
       enabled: true
@@ -53,16 +51,9 @@ search:
 
 matching:
   min_score_to_notify: 70   # notificar ofertas con afinidad >= 70/100
-  min_score_to_tailor: 70   # crear CV ajustado si además el CV actual no te hace justicia
 
-# Reutilizar hojas de vida ya ajustadas (output/**/version.json) cuando una oferta nueva es parecida.
-# Solo se consideran versiones creadas a partir de tu resume/base.md actual: si lo cambias, se generan nuevas.
-resume_reuse:
-  enabled: true
-  max_candidates: 20        # versiones más recientes que se le muestran al selector
-
-# Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match),
-# elegir una hoja de vida para reutilizar (select) y ajustarla (tailor).
+# Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match)
+# y ajustar la hoja de vida (tailor).
 llm:
   provider: openrouter          # anthropic | openrouter
   model: qwen/qwen3.7-flash                      # vacío con anthropic = claude-opus-5-5. Con openrouter es obligatorio.
@@ -75,11 +66,3 @@ llm:
   #   tailor: anthropic/claude-sonnet-4.5
   openrouter:
     reasoning: false           # true = enviar el nivel de esfuerzo a modelos con razonamiento
-
-# Dónde guarda el agente su estado (perfil, ofertas vistas, historial) y el catálogo de hojas de vida.
-# Solo en este computador: están en .gitignore y nunca se suben al repositorio. Rutas relativas a la
-# carpeta del proyecto, o absolutas (p. ej. ~/Documents/job-search-data/output para tenerlas a mano;
-# ojo: launchd no puede escribir en Documentos/Escritorio sin permisos de acceso completo al disco).
-storage:
-  data_dir: data
-  output_dir: output

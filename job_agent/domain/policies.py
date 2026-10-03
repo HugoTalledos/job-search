@@ -1,24 +1,14 @@
-"""Pure business rules: posting identity, de-duplication, deterministic filters, search plan,
-notify/tailor thresholds, profile freshness and changes, and resume reuse."""
+"""Pure business rules: posting identity, de-duplication, normalisation, profile freshness and changes."""
 
 from __future__ import annotations
 
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-from .models import (
-    JobLead,
-    JobMatch,
-    JobPosting,
-    Profile,
-    ResumeVersion,
-    SearchPlan,
-    SearchQuery,
-    StoredProfile,
-)
+from .models import JobLead, JobPosting, Profile, StoredProfile
 
 # --- Normalisation ---------------------------------------------------------------------------------
 
@@ -95,100 +85,7 @@ def duplicate_signature(job: JobPosting) -> str:
     return f"{company}|{' '.join(words)}"  # word order does not matter
 
 
-# --- Search plan ---------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SearchPreferences:
-    locations: tuple[str, ...] = ("Remote",)
-    extra_keywords: tuple[str, ...] = ()
-    max_roles_from_profile: int = 3
-    max_queries: int = 8
-    posted_within_days: int = 1
-    work_types: tuple[str, ...] = ()
-    experience_levels: tuple[str, ...] = ()
-    max_details_per_run: int = 20
-    max_jobs_per_run: int = 25
-
-    def plan_for(self, profile: Profile) -> SearchPlan:
-        """Keyword x location queries, most specific first: configured keywords, target roles, profile keywords."""
-        keywords, seen = [], set()
-        for kw in [*self.extra_keywords, *profile.target_roles[: self.max_roles_from_profile], *profile.search_keywords]:
-            if kw.strip() and (norm := _norm(kw)) not in seen:
-                seen.add(norm)
-                keywords.append(kw.strip())
-        locations = list(self.locations or profile.locations) or [None]
-        queries = [SearchQuery(keywords=k, location=loc) for k in keywords for loc in locations]
-        return SearchPlan(
-            queries=queries[: self.max_queries],
-            posted_within_days=self.posted_within_days,
-            work_types=list(self.work_types),
-            experience_levels=list(self.experience_levels),
-        )
-
-
-# --- Deterministic filters -----------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class JobFilter:
-    """Rules applied to every fetched posting before any LLM sees it. Returns a reason when it must be dropped."""
-
-    exclude_companies: tuple[str, ...] = ()
-    exclude_title_keywords: tuple[str, ...] = ()
-    posted_within_days: int | None = None
-    work_types: tuple[str, ...] = ()  # allowed: remote, hybrid, on_site (empty = any)
-    _companies: frozenset[str] = field(init=False, repr=False)
-    _title_words: tuple[str, ...] = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_companies", frozenset(normalize_company(c) for c in self.exclude_companies))
-        object.__setattr__(self, "_title_words", tuple(normalize_title(k) for k in self.exclude_title_keywords if k.strip()))
-
-    def rejection(self, job: JobPosting, now: datetime | None = None) -> str | None:
-        if self._companies and normalize_company(job.company) in self._companies:
-            return "empresa_excluida"
-        title = f" {normalize_title(job.title)} "
-        if any(f" {w} " in title for w in self._title_words):
-            return "palabra_excluida_en_titulo"
-        if self.work_types and job.remote != "unknown":
-            allowed = {w.replace("-", "_") for w in self.work_types}
-            if {"remote": "remote", "hybrid": "hybrid", "onsite": "on_site"}[job.remote] not in allowed:
-                return "modalidad_no_deseada"
-        if self.posted_within_days is not None and (posted := _parse_date(job.posted_at)):
-            now = now or datetime.now(timezone.utc)
-            # One extra day of slack: sources report coarse ages ("1 day ago").
-            if now - posted > timedelta(days=self.posted_within_days + 1):
-                return "publicacion_antigua"
-        if not job.description.strip():
-            return "sin_descripcion"
-        return None
-
-
-def _parse_date(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value.strip())
-    except (ValueError, AttributeError):
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
-# --- Matching thresholds --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MatchingPolicy:
-    min_score_to_notify: int = 70
-    min_score_to_tailor: int = 70
-
-    def should_notify(self, match: JobMatch) -> bool:
-        return match.score >= self.min_score_to_notify
-
-    def should_tailor(self, match: JobMatch) -> bool:
-        return self.should_notify(match) and match.resume_undersells and match.score >= self.min_score_to_tailor
-
-
-# --- Profile and resume versions --------------------------------------------------------------------
+# --- Profile freshness --------------------------------------------------------------------
 
 
 def repos_fingerprint(repo_heads: list[str]) -> str:
@@ -230,24 +127,6 @@ class ProfileRefreshPolicy:
 def resume_fingerprint(resume_text: str) -> str:
     """Identifies the base resume a tailored version was derived from."""
     return hashlib.sha256(resume_text.strip().encode()).hexdigest()[:16]
-
-
-@dataclass(frozen=True)
-class ReusePolicy:
-    """Which stored versions may be offered for reuse.
-
-    Only versions derived from the current base resume qualify: if the base changed (new job, new
-    skills, corrected data), older versions could carry outdated information.
-    """
-
-    enabled: bool = True
-    max_candidates: int = 20
-
-    def candidates(self, versions: list[ResumeVersion], base_fingerprint: str) -> list[ResumeVersion]:
-        if not self.enabled:
-            return []
-        current = [v for v in versions if v.base_fingerprint == base_fingerprint]
-        return sorted(current, key=lambda v: v.created_at, reverse=True)[: self.max_candidates]
 
 
 _LEVELS = {"basic": "básico", "intermediate": "intermedio", "advanced": "avanzado", "expert": "experto"}

@@ -47,18 +47,11 @@ class SearchConfig(BaseModel):
     exclude_title_keywords: list[str] = Field(default_factory=list)
     # Budgets
     max_details_per_run: int = 20
-    max_jobs_per_run: int = 25
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
 
 
 class MatchingConfig(BaseModel):
     min_score_to_notify: int = Field(default=70, ge=0, le=100)
-    min_score_to_tailor: int = 70
-
-
-class ResumeReuseConfig(BaseModel):
-    enabled: bool = True
-    max_candidates: int = 20
 
 
 class OpenRouterConfig(BaseModel):
@@ -71,31 +64,11 @@ class LlmConfig(BaseModel):
 
     provider: Literal["anthropic", "openrouter"] = "anthropic"
     model: str | None = None  # default for every task; anthropic falls back to claude-opus-5-5
-    models: dict[Literal["profile", "match", "select", "tailor"], str] = Field(default_factory=dict)
+    models: dict[Literal["profile", "match", "tailor"], str] = Field(default_factory=dict)
     openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
 
     def model_for(self, task: str) -> str | None:
         return self.models.get(task) or os.environ.get("JOB_AGENT_MODEL") or self.model
-
-
-class StorageConfig(BaseModel):
-    """Where the agent keeps its state and tailored resumes (local only, never committed)."""
-
-    data_dir: str = "data"  # profile.json, state.json, matches.jsonl
-    output_dir: str = "output"  # tailored resumes catalogue
-
-    @staticmethod
-    def _resolve(value: str) -> Path:
-        path = Path(value).expanduser()
-        return path if path.is_absolute() else ROOT / path
-
-    @property
-    def data_path(self) -> Path:
-        return self._resolve(self.data_dir)
-
-    @property
-    def output_path(self) -> Path:
-        return self._resolve(self.output_dir)
 
 
 class Config(BaseModel):
@@ -106,9 +79,7 @@ class Config(BaseModel):
     repositories: list[RepoSpec] = Field(default_factory=list)
     search: SearchConfig = Field(default_factory=SearchConfig)
     matching: MatchingConfig = Field(default_factory=MatchingConfig)
-    resume_reuse: ResumeReuseConfig = Field(default_factory=ResumeReuseConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
-    storage: StorageConfig = Field(default_factory=StorageConfig)
     profile_refresh_days: int = 30
     language: str = "es"
 

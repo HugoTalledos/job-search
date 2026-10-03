@@ -7,8 +7,6 @@ from ...domain.models import (
     JobPosting,
     Profile,
     RepoEvidence,
-    ResumeVersion,
-    ReuseDecision,
     TailoredResume,
 )
 from . import prompts
@@ -41,22 +39,6 @@ class LlmJobMatcher:
             system=prompts.MATCH_SYSTEM,
             content=prompts.match_content(job, profile, resume_text),
             schema=JobMatch,
-            effort="low",
-            max_tokens=8000,
-        )
-
-
-class LlmResumeSelector:
-    """ResumeSelector port."""
-
-    def __init__(self, model: StructuredModel) -> None:
-        self.model = model
-
-    def choose(self, job: JobPosting, match: JobMatch, candidates: list[ResumeVersion]) -> ReuseDecision:
-        return self.model.complete(
-            system=prompts.SELECT_SYSTEM,
-            content=prompts.select_content(job, match, candidates),
-            schema=ReuseDecision,
             effort="low",
             max_tokens=8000,
         )

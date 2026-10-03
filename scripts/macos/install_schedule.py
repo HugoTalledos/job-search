@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Programa el agente en macOS con launchd (3 corridas al día por defecto).
+"""Programa el colector local en macOS con launchd (3 corridas al día por defecto).
 
     python3 scripts/macos/install_schedule.py                       # 08:00, 14:00 y 22:00
     python3 scripts/macos/install_schedule.py --times 07:30 13:00 21:00
@@ -22,15 +22,13 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-RUNNER = REPO / "scripts" / "macos" / "run_local.sh"
 COLLECTOR_RUNNER = REPO / "scripts" / "macos" / "run_collector.sh"
 PROTECTED = ("Documents", "Desktop", "Downloads", "Library/Mobile Documents")
 
 
-def default_label(component: str = "legacy") -> str:
+def default_label(component: str = "collector") -> str:
     user = re.sub(r"[^a-z0-9]+", "", os.environ.get("USER", "user").lower()) or "user"
-    suffix = ".job-search-collector" if component == "collector" else ".job-search"
-    return f"com.{user}{suffix}"
+    return f"com.{user}.job-search-collector"
 
 
 def parse_times(values: list[str]) -> list[dict[str, int]]:
@@ -52,12 +50,11 @@ def tool_path() -> str:
     return ":".join(dict.fromkeys(dirs))
 
 
-def build_plist(label: str, times: list[dict[str, int]], component: str = "legacy") -> dict:
+def build_plist(label: str, times: list[dict[str, int]], component: str = "collector") -> dict:
     logs = REPO / "logs"
-    runner = COLLECTOR_RUNNER if component == "collector" else RUNNER
     return {
         "Label": label,
-        "ProgramArguments": ["/bin/bash", str(runner)],
+        "ProgramArguments": ["/bin/bash", str(COLLECTOR_RUNNER)],
         "WorkingDirectory": str(REPO),
         "StartCalendarInterval": times,
         "EnvironmentVariables": {"PATH": tool_path(), "HOME": str(Path.home()), "LANG": "en_US.UTF-8"},
@@ -72,12 +69,10 @@ def launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=check)
 
 
-def preflight(component: str = "legacy") -> list[str]:
+def preflight() -> list[str]:
     problems = []
-    environment = ".venv-collector" if component == "collector" else ".venv"
-    setup = "setup_collector.sh" if component == "collector" else "setup.sh"
-    if not (REPO / environment / "bin" / "python").exists():
-        problems.append(f"No existe {environment}: ejecuta primero scripts/macos/{setup}")
+    if not (REPO / ".venv-collector" / "bin" / "python").exists():
+        problems.append("No existe .venv-collector: ejecuta primero scripts/macos/setup_collector.sh")
     if not (REPO / ".env").exists():
         problems.append("No existe .env: cópialo de example.env (cp example.env .env) y complétalo")
     if not shutil.which("uvx"):
@@ -85,36 +80,19 @@ def preflight(component: str = "legacy") -> list[str]:
     if not (Path.home() / ".linkedin-mcp" / "cookies.json").exists():
         problems.append("No hay sesión de LinkedIn: ejecuta 'uvx mcp-server-linkedin@latest --login'")
     home = Path.home()
-    paths = [("El repo", REPO)]
-    if component == "legacy":
-        paths += storage_dirs()
-    for label, path in paths:
-        if any(path.is_relative_to(home / p) for p in PROTECTED):
-            problems.append(
-                f"{label} está en {path}: macOS impide a las tareas programadas acceder a Documentos, "
-                "Escritorio, Descargas o iCloud. Usa otra ubicación (p. ej. ~/dev/job-search) y vuelve a "
-                "ejecutar este instalador."
-            )
+    if any(REPO.is_relative_to(home / p) for p in PROTECTED):
+        problems.append(
+            f"El repo está en {REPO}: macOS impide a las tareas programadas acceder a Documentos, "
+            "Escritorio, Descargas o iCloud. Usa otra ubicación (p. ej. ~/dev/job-search) y vuelve a "
+            "ejecutar este instalador."
+        )
     return problems
-
-
-def storage_dirs() -> list[tuple[str, Path]]:
-    """data_dir and output_dir from config.yaml, resolved by the project's own code (needs .venv)."""
-    python = REPO / ".venv" / "bin" / "python"
-    if not python.exists():
-        return []
-    code = "from job_agent.config import load_config as l; c = l().storage; print(c.data_path); print(c.output_path)"
-    result = subprocess.run([str(python), "-c", code], cwd=REPO, capture_output=True, text=True)
-    if result.returncode != 0:
-        return []
-    data, output = result.stdout.strip().splitlines()
-    return [("storage.data_dir", Path(data)), ("storage.output_dir", Path(output))]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--times", nargs="+", default=["08:00", "14:00", "22:00"], help="Horas HH:MM (24 h)")
-    parser.add_argument("--component", choices=["legacy", "collector"], default="legacy")
+    parser.add_argument("--component", choices=["collector"], default="collector")
     parser.add_argument("--label")
     parser.add_argument("--dry-run", action="store_true", help="Mostrar el plist sin instalar nada")
     parser.add_argument("--uninstall", action="store_true")
@@ -136,7 +114,7 @@ def main() -> int:
         print(f"Programación eliminada ({label}).")
         return 0
 
-    if problems := preflight(args.component):
+    if problems := preflight():
         print("Antes de programar el agente:\n- " + "\n- ".join(problems))
         return 1
 
@@ -149,10 +127,9 @@ def main() -> int:
         sys.exit(f"launchctl bootstrap falló: {result.stderr.strip()}")
     launchctl("enable", f"{domain}/{label}", check=False)
 
-    log_prefix = "collector" if args.component == "collector" else "run"
     print(f"Agente programado a las {', '.join(args.times)} ({label}).")
     print(f"  Correr ahora:     launchctl kickstart {domain}/{label}")
-    print(f"  Ver el log:       tail -f {REPO}/logs/{log_prefix}-$(date +%Y-%m-%d).log")
+    print(f"  Ver el log:       tail -f {REPO}/logs/collector-$(date +%Y-%m-%d).log")
     print(f"  Estado:           launchctl print {domain}/{label} | head -20")
     print(f"  Desinstalar:      python3 scripts/macos/install_schedule.py --component {args.component} --uninstall")
     return 0

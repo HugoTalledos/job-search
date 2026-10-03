@@ -7,28 +7,12 @@ only through one of these protocols. Adapters in ``job_agent.adapters`` implemen
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from .cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
 
-from ..domain.models import (
-    JobAlert,
-    JobLead,
-    JobMatch,
-    JobPosting,
-    MatchRecord,
-    Profile,
-    RepoEvidence,
-    ResumeVersion,
-    ReuseDecision,
-    RepoRef,
-    SavedApplication,
-    SearchPlan,
-    StoredProfile,
-    TailoredResume,
-)
+from ..domain.models import JobMatch, JobPosting, Profile, RepoEvidence, RepoRef, StoredProfile, TailoredResume
 
 # --- Candidate data ----------------------------------------------------------------------------
 
@@ -82,12 +66,6 @@ class ResumeTailor(Protocol):
         ...
 
 
-class ResumeSelector(Protocol):
-    """Decides whether a stored tailored resume can serve a new posting."""
-
-    def choose(self, job: JobPosting, match: JobMatch, candidates: list[ResumeVersion]) -> ReuseDecision: ...
-
-
 # --- Job market ---------------------------------------------------------------------------------
 
 
@@ -97,47 +75,7 @@ class CollectedPostingsRepository(Protocol):
     def list_postings(self) -> list[JobPosting]: ...
 
 
-@runtime_checkable
-class JobSource(Protocol):
-    """A job board queried deterministically (no LLM): LinkedIn via its MCP server, a job-board API...
-
-    ``collect`` runs every query of the plan, asks ``admit`` about each id it finds (the application
-    rejects ids already processed or repeated, before any details are fetched) and fetches the details of
-    at most ``max_details`` admitted ids.
-    """
-
-    @property
-    def name(self) -> str: ...
-
-    def collect(self, plan: SearchPlan, admit: Callable[[JobLead], bool], max_details: int) -> list[JobPosting]: ...
-
-
 # --- Outputs -----------------------------------------------------------------------------------
-
-
-class ApplicationStore(Protocol):
-    """Catalogue of tailored resumes: persist (rendered), list, load and track reuse."""
-
-    def save(
-        self,
-        job: JobPosting,
-        match: JobMatch,
-        tailored: TailoredResume,
-        base_fingerprint: str,
-        adapted_from: str | None = None,
-    ) -> SavedApplication: ...
-
-    def list_versions(self) -> list[ResumeVersion]: ...
-
-    def load_markdown(self, version_id: str) -> str: ...
-
-    def locate(self, version_id: str) -> SavedApplication: ...
-
-    def record_use(self, version_id: str, job: JobPosting) -> None: ...
-
-
-class Notifier(Protocol):
-    def notify(self, alert: JobAlert) -> None: ...
 
 
 class ProfileReporter(Protocol):
@@ -146,28 +84,6 @@ class ProfileReporter(Protocol):
     def built(self, profile: Profile, changes: list[str], first_build: bool) -> None: ...
 
     def failed(self) -> None: ...
-
-
-class SeenJobsRepository(Protocol):
-    """Postings already processed (scored or discarded by a filter)."""
-
-    def is_seen_key(self, key: str) -> bool:
-        """Known id; also refreshes its last-seen date so postings still online are not forgotten."""
-        ...
-
-    def is_duplicate(self, job: JobPosting) -> bool:
-        """Same company + role (normalised) as a processed posting, under another id or source."""
-        ...
-
-    def mark(self, job: JobPosting, outcome: str, score: int | None = None) -> None: ...
-
-    def commit(self) -> None:
-        """Flush pending changes to durable storage."""
-        ...
-
-
-class MatchHistory(Protocol):
-    def append(self, record: MatchRecord) -> None: ...
 
 
 # --- On-demand CV generation ------------------------------------------------------------------

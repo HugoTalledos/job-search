@@ -47,5 +47,4 @@ case "$REPO" in
 esac
 
 echo
-echo "Siguiente paso: prueba una corrida sin notificaciones:"
-echo "  scripts/macos/run_local.sh --dry-run && tail -50 logs/run-\$(date +%Y-%m-%d).log"
+echo "Siguiente paso: instala el colector local: scripts/macos/setup_collector.sh"

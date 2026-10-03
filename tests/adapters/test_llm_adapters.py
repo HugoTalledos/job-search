@@ -12,13 +12,12 @@ from job_agent.adapters.llm import (
     AnthropicStructuredModel,
     LLMError,
     LlmJobMatcher,
-    LlmResumeSelector,
     LlmResumeTailor,
     OpenRouterStructuredModel,
 )
 from job_agent.adapters.llm.anthropic_model import FALLBACK_BETA
 from job_agent.adapters.llm.openrouter_model import strict_json_schema
-from job_agent.domain.models import JobMatch, ResumeVersion, ReuseDecision, TailoredResume
+from job_agent.domain.models import JobMatch, TailoredResume
 
 # --- Anthropic ----------------------------------------------------------------------------------
 
@@ -47,15 +46,8 @@ def test_anthropic_matcher_request_shape(job, profile, match):
     assert body["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_anthropic_selector_and_tailor(job, match, profile, tailored):
+def test_anthropic_tailor(job, match, profile, tailored):
     seen = []
-    decision = ReuseDecision(action="reuse", version_id="output/v1", covered_requirements=["Python"],
-                             missing_requirements=[], rationale="ok")
-    version = ResumeVersion(id="output/v1", job_key="k", job_title="Backend Dev", company="Globex", language="en",
-                            highlights=["Python"], base_fingerprint="f", created_at=datetime.now(timezone.utc))
-    assert LlmResumeSelector(_anthropic(decision.model_dump_json(), seen)).choose(job, match, [version]) == decision
-    assert '"id": "output/v1"' in seen[0][0]["messages"][0]["content"][0]["text"]
-
     seen.clear()
     tailor = LlmResumeTailor(_anthropic(tailored.model_dump_json(), seen))
     tailor.tailor(job, match, profile, "cv")

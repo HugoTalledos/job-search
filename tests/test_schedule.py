@@ -22,10 +22,6 @@ def test_collector_plist_runs_dedicated_script_at_three_default_times():
     ]
 
 
-def test_collector_and_legacy_schedules_have_distinct_default_labels():
-    assert install_schedule.default_label(component="collector") != install_schedule.default_label()
-
-
 def test_collector_dry_run_prints_installable_plist(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["install_schedule.py", "--component", "collector", "--dry-run"])
 
@@ -36,13 +32,12 @@ def test_collector_dry_run_prints_installable_plist(monkeypatch, capsys):
     assert plist["ProgramArguments"][1].endswith("run_collector.sh")
 
 
-@pytest.mark.parametrize("runner,command", [("run_local.sh", "job_agent run"), ("run_collector.sh", "local_collector")])
-def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path, runner, command):
+def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path):
+    runner, command = "run_collector.sh", "local_collector"
     scripts = tmp_path / "scripts" / "macos"
     scripts.mkdir(parents=True)
     shutil.copy2(install_schedule.REPO / "scripts" / "macos" / runner, scripts / runner)
-    environment = ".venv-collector" if runner == "run_collector.sh" else ".venv"
-    python = tmp_path / environment / "bin" / "python"
+    python = tmp_path / ".venv-collector" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text('#!/bin/sh\necho "$*" >> "$TEST_RUN_LOG"\n')
     python.chmod(0o755)
@@ -60,3 +55,8 @@ def test_scheduled_runner_waits_for_shared_lock_then_runs(tmp_path, runner, comm
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=5)
+
+
+def test_schedule_installs_only_the_collector():
+    plist = install_schedule.build_plist(install_schedule.default_label(), [{"Hour": 8, "Minute": 0}])
+    assert plist["ProgramArguments"][-1].endswith("run_collector.sh")

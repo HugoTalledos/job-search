@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
@@ -41,16 +39,6 @@ def test_load_dotenv(tmp_path, monkeypatch):
     assert os.environ["EXISTING"] == "old"  # real environment wins
     assert "BLANK_KEY" not in os.environ  # blank placeholders stay unset
     load_dotenv(tmp_path / "missing.env")  # no error
-
-
-def test_storage_paths(tmp_path):
-    from job_agent.config import ROOT, StorageConfig
-
-    default = StorageConfig()
-    assert default.data_path == ROOT / "data" and default.output_path == ROOT / "output"
-    custom = StorageConfig(data_dir=str(tmp_path / "d"), output_dir="~/job-search-cvs")
-    assert custom.data_path == tmp_path / "d"
-    assert custom.output_path == Path("~/job-search-cvs").expanduser()
 
 
 def test_firebase_bucket_is_loaded_from_environment(monkeypatch):
