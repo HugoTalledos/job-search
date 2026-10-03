@@ -41,3 +41,8 @@ def test_exclusion_reason(job):
     assert exclusion_reason(job, ["ACME"], []) == "empresa_excluida"
     assert exclusion_reason(job, [], ["engineer"]) == "palabra_excluida_en_titulo"
     assert exclusion_reason(job, [], ["engine"]) is None  # whole words only
+
+
+def test_enum_lists_are_cleaned_and_deduplicated():
+    prefs = SearchPreferences(work_types=[" Remote", "remote", "HYBRID", " "], experience_levels=["Entry ", "entry"])
+    assert prefs.work_types == ["remote", "hybrid"] and prefs.experience_levels == ["entry"]

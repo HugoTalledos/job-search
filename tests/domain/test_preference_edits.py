@@ -65,3 +65,15 @@ def test_diff_lists_added_removed_and_scalars():
         "➖ Ubicaciones: Colombia",
         "🗓 Días desde la publicación: 7",
     ]
+
+
+def test_adding_existing_enum_value_is_no_change():
+    out = apply_operations(SearchPreferences(work_types=["remote"]),
+                           PreferenceEdit(operations=[op("add", "work_types", ["remote"])]))
+    assert out.preferences is None and out.problems == ["No encontré cambios para aplicar."]
+
+
+def test_unclear_next_to_valid_operation_still_applies():
+    edit = PreferenceEdit(operations=[op("add", "keywords_include", ["Go"]), op("unclear", "none", [], "No entendí lo otro")])
+    out = apply_operations(SearchPreferences(), edit)
+    assert out.preferences.keywords_include == ["Go"] and out.problems == ["No entendí lo otro"]
