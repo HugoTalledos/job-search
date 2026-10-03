@@ -26,8 +26,8 @@ CRITERIA = [
 
 class _ScoreAnswer(BaseModel):
     type: Literal["score"]
-    score: float = Field(ge=0, le=4)
-    confidence: float = Field(ge=0, le=1)
+    score: float = Field(ge=0, le=4, strict=True)
+    confidence: float = Field(ge=0, le=1, strict=True)
 
 
 class _Answers(BaseModel):

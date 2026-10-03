@@ -45,7 +45,9 @@ def test_jev_sends_profile_and_job_to_decisions_api(profile, job):
     answer(kind="choice"),
     answer(score=4.5),
     answer(score="high"),
+    answer(score="2.5"),
     answer(confidence=1.2),
+    answer(confidence="0.7"),
 ])
 def test_jev_rejects_invalid_answer(profile, job, payload):
     with pytest.raises(ValueError):
