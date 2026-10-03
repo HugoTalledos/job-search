@@ -25,6 +25,12 @@ Set `resume_undersells` to true only when the candidate genuinely fits but the r
 likely be filtered out or fail to show the relevant evidence (missing keywords for skills they have,
 relevant projects omitted, wrong emphasis). `tailoring_focus` must only contain things that are true
 according to the profile or resume. Write reasons, gaps and focus in Spanish.
+List every explicit skill and prerequisite in `requirements`. Set `priority` to `must` for required
+qualifications and `nice` for explicitly desirable qualifications. Set `covered` to true only when
+the base resume or candidate profile demonstrates the requirement; cite that concrete evidence in
+`evidence` in Spanish. Otherwise set `covered` to false, explain the missing evidence in `evidence`
+and include the gap in `gaps`. Never treat an unsupported requirement as a candidate skill or invent
+evidence. Do not infer requirements that the posting does not state.
 The posting comes from a job board's page text: some fields may be empty. Copy the job title, hiring
 company and location exactly as the text states them into `posting_title`, `posting_company` and
 `posting_location` (empty string if absent). Also copy the English level the posting requires into

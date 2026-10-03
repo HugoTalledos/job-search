@@ -46,11 +46,24 @@ class JobSearchResult(BaseModel):
     jobs: list[JobPosting]
 
 
+class JobRequirement(BaseModel):
+    """An explicit posting requirement with evidence from the candidate's inputs."""
+
+    name: str
+    priority: Literal["must", "nice"]
+    covered: bool
+    evidence: str = Field(description="Evidence in the resume or profile, or the missing evidence for a gap")
+
+
 class JobMatch(BaseModel):
     score: int = Field(description="0-100 fit between candidate and posting")
     verdict: Literal["strong", "good", "weak", "no"]
     reasons: list[str] = Field(description="Why the candidate fits")
     gaps: list[str] = Field(description="Requirements the candidate does not meet")
+    requirements: list[JobRequirement] = Field(
+        default_factory=list,
+        description="Each explicit skill or requirement, its priority and candidate evidence or gap",
+    )
     resume_undersells: bool = Field(
         description="True when the candidate really fits but the current resume does not show it well enough"
     )

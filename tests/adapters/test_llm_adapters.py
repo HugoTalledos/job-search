@@ -156,3 +156,28 @@ def test_strict_schema_closes_every_object():
     change = schema["$defs"]["ResumeChange"]
     assert change["additionalProperties"] is False and set(change["required"]) == set(change["properties"])
     assert strict_json_schema(JobMatch)["properties"]["verdict"]["enum"] == ["strong", "good", "weak", "no"]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openrouter"])
+def test_matcher_preserves_structured_requirement_evidence(provider, job, profile, match):
+    payload = match.model_dump()
+    payload["requirements"] = [
+        {"name": "Python", "priority": "must", "covered": True, "evidence": "Perfil: repo x"},
+        {"name": "Kubernetes", "priority": "nice", "covered": False, "evidence": "Sin evidencia en CV o perfil"},
+    ]
+    seen = []
+    model = (_anthropic(json.dumps(payload), seen) if provider == "anthropic" else
+             _openrouter([(200, _completion(json.dumps(payload)))], seen))
+
+    result = LlmJobMatcher(model).score(job, profile, "Python developer")
+
+    assert [(r.name, r.priority, r.covered, r.evidence) for r in result.requirements] == [
+        ("Python", "must", True, "Perfil: repo x"),
+        ("Kubernetes", "nice", False, "Sin evidencia en CV o perfil"),
+    ]
+    body = seen[0][0] if provider == "anthropic" else seen[0]
+    schema = (body["output_config"]["format"]["schema"] if provider == "anthropic" else
+              body["response_format"]["json_schema"]["schema"])
+    requirement = schema["$defs"]["JobRequirement"]
+    assert set(requirement["properties"]) == {"name", "priority", "covered", "evidence"}
+    assert requirement["properties"]["priority"]["enum"] == ["must", "nice"]
