@@ -8,7 +8,10 @@ only through one of these protocols. Adapters in ``job_agent.adapters`` implemen
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Protocol, runtime_checkable
+
+from .cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
 
 from ..domain.models import (
     JobAlert,
@@ -165,3 +168,39 @@ class SeenJobsRepository(Protocol):
 
 class MatchHistory(Protocol):
     def append(self, record: MatchRecord) -> None: ...
+
+
+# --- On-demand CV generation ------------------------------------------------------------------
+
+
+class CandidateProfileReader(Protocol):
+    def load(self) -> Profile: ...
+
+
+class JobPostingReader(Protocol):
+    def load(self, posting_id: str) -> JobPosting: ...
+
+
+class CvTrackingStore(Protocol):
+    def claim(self, key: CvVersionKey, now: datetime) -> ClaimResult: ...
+
+    def mark_ready(
+        self, key: CvVersionKey, artifacts: CvArtifacts, match: JobMatch, tailored: TailoredResume,
+        *, attempt_id: str,
+    ) -> None: ...
+
+    def mark_failed(self, key: CvVersionKey, *, attempt_id: str) -> None: ...
+
+    def mark_summary_sent(self, key: CvVersionKey, message_id: int) -> None: ...
+
+    def mark_pdf_sent(self, key: CvVersionKey, message_id: int) -> None: ...
+
+    def mark_delivery_failed(self, key: CvVersionKey) -> None: ...
+
+    def load_ready(self, key: CvVersionKey) -> ReadyCvVersion: ...
+
+
+class CvArtifactStore(Protocol):
+    def save(self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str) -> CvArtifacts: ...
+
+    def read_pdf(self, artifacts: CvArtifacts) -> bytes: ...

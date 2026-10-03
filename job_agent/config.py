@@ -151,3 +151,11 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     path = Path(path or os.environ.get("JOB_AGENT_CONFIG", ROOT / "config.yaml"))
     raw = yaml.safe_load(path.read_text()) if path.exists() else {}
     return Config.model_validate(_expand_env(raw or {}))
+
+
+def require_firebase_storage_bucket() -> str:
+    """Require the webhook's private bucket without affecting the local CLI flow."""
+    bucket = os.environ.get('FIREBASE_STORAGE_BUCKET', '')
+    if not bucket.strip() or '/' in bucket or any(c.isspace() for c in bucket):
+        raise ValueError('FIREBASE_STORAGE_BUCKET must be a nonempty bare bucket name')
+    return bucket

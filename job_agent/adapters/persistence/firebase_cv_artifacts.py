@@ -1,0 +1,40 @@
+"""Private CV artifacts in Cloud Storage for Firebase, using ADC by default."""
+
+from __future__ import annotations
+
+from google.cloud import storage
+
+from ...application.cv_models import CvArtifacts, CvVersionKey
+
+
+class FirebaseCvArtifactStore:
+    def __init__(self, bucket_name: str, client: storage.Client | None = None) -> None:
+        if not bucket_name.strip() or '/' in bucket_name or any(c.isspace() for c in bucket_name):
+            raise ValueError('FIREBASE_STORAGE_BUCKET must be a nonempty bare bucket name')
+        self.bucket_name = bucket_name
+        self.bucket = (client if client is not None else storage.Client()).bucket(bucket_name)
+
+    def save(self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str) -> CvArtifacts:
+        """Upload a claimed, not-yet-ready version; return only after all three succeed.
+
+        The caller owns the claim and must not call save for a READY version. A partial
+        failure leaves private objects in place for the next claimed attempt to overwrite.
+        No ACLs or download tokens are added; deployment must supply a private bucket.
+        """
+        if not pdf:
+            raise ValueError('A nonempty PDF is required')
+        prefix = f'cvs/{key.posting_id}/{key.version_id}'
+        for name, content, content_type in (
+            ('cv.pdf', pdf, 'application/pdf'),
+            ('resume.md', markdown, 'text/markdown; charset=utf-8'),
+            ('README.md', readme, 'text/markdown; charset=utf-8'),
+        ):
+            self.bucket.blob(f'{prefix}/{name}').upload_from_string(content, content_type=content_type)
+        uri = f'gs://{self.bucket_name}/{prefix}'
+        return CvArtifacts(f'{uri}/cv.pdf', f'{uri}/resume.md', f'{uri}/README.md')
+
+    def read_pdf(self, artifacts: CvArtifacts) -> bytes:
+        prefix = f'gs://{self.bucket_name}/'
+        if not artifacts.pdf_uri.startswith(prefix) or not artifacts.pdf_uri[len(prefix):]:
+            raise ValueError('CV artifact must belong to the configured private bucket')
+        return self.bucket.blob(artifacts.pdf_uri[len(prefix):]).download_as_bytes()

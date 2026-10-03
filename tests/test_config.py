@@ -51,3 +51,20 @@ def test_storage_paths(tmp_path):
     custom = StorageConfig(data_dir=str(tmp_path / "d"), output_dir="~/job-search-cvs")
     assert custom.data_path == tmp_path / "d"
     assert custom.output_path == Path("~/job-search-cvs").expanduser()
+
+
+def test_firebase_bucket_is_loaded_from_environment(monkeypatch):
+    from job_agent.config import require_firebase_storage_bucket
+    monkeypatch.setenv('FIREBASE_STORAGE_BUCKET', 'private-bucket')
+    assert require_firebase_storage_bucket() == 'private-bucket'
+
+
+@pytest.mark.parametrize('value', [None, '', ' ', 'gs://private-bucket', 'bucket/path'])
+def test_firebase_bucket_must_be_configured_as_bare_bucket_name(monkeypatch, value):
+    from job_agent.config import require_firebase_storage_bucket
+    if value is None:
+        monkeypatch.delenv('FIREBASE_STORAGE_BUCKET', raising=False)
+    else:
+        monkeypatch.setenv('FIREBASE_STORAGE_BUCKET', value)
+    with pytest.raises(ValueError, match='FIREBASE_STORAGE_BUCKET'):
+        require_firebase_storage_bucket()
