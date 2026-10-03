@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import logging
 import re
+from _thread import LockType
 from collections import deque
 from threading import Lock
 from typing import Any, Protocol
@@ -16,10 +17,14 @@ log = logging.getLogger(__name__)
 
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 BUILD_PROFILE_COMMANDS = {"/build-profile", "/build_profile"}
+RESEND_PENDING_COMMAND = "/resend_pending"
 
 BUILDING = "Voy a construir tu nuevo perfil profesional"
 ALREADY_BUILDING = "Ya estoy construyendo tu perfil profesional; te aviso cuando termine."
-HELP = "Comandos disponibles:\n/build_profile — construir tu perfil profesional"
+RESENDING_PENDING = "Estoy buscando propuestas que hayan quedado pendientes de notificar"
+ALREADY_RESENDING = "Ya estoy reenviando las propuestas pendientes."
+HELP = ("Comandos disponibles:\n/build_profile — construir tu perfil profesional"
+        "\n/resend_pending — reintentar las notificaciones pendientes")
 
 
 class ChatMessenger(Protocol):
@@ -43,6 +48,8 @@ def add_telegram_webhook(
     chat_id: str,
     messenger: ChatMessenger,
     build_profile: ProfileBuilder,
+    resend_pending: ProfileBuilder,
+    execution_lock: LockType | None = None,
 ) -> None:
     """Register ``POST /webhooks/telegram``.
 
@@ -55,6 +62,8 @@ def add_telegram_webhook(
         raise ValueError("TELEGRAM_WEBHOOK_SECRET solo admite 1 a 256 caracteres A-Z, a-z, 0-9, _ o -")
     expected_secret = secret.encode("utf-8")
     build_lock = Lock()
+    resend_lock = Lock()
+    shared_lock = execution_lock or Lock()
     recent_updates: deque[int] = deque(maxlen=100)
     updates_lock = Lock()
 
@@ -65,6 +74,20 @@ def add_telegram_webhook(
             log.error("No se pudo construir el perfil profesional (%s)", type(exc).__name__)
         finally:
             build_lock.release()
+
+    def run_resend() -> None:
+        try:
+            with shared_lock:
+                report = resend_pending.execute()
+            if report.pending == 0:
+                messenger.send_text("No hay propuestas pendientes de notificar.")
+            else:
+                messenger.send_text(f"Reenvío terminado: {report.notified} notificadas, {report.failed} fallidas.")
+        except Exception as exc:
+            log.error("No se pudieron reenviar las propuestas pendientes (%s)", type(exc).__name__)
+            messenger.send_text("No pude revisar las propuestas pendientes. Revisa los registros del servicio.")
+        finally:
+            resend_lock.release()
 
     def is_repeated(update_id: Any) -> bool:
         if not isinstance(update_id, int):
@@ -94,6 +117,15 @@ def add_telegram_webhook(
                 messenger.send_text(BUILDING)
             finally:
                 background_tasks.add_task(run_build)
+            return
+        if _command(text) == RESEND_PENDING_COMMAND:
+            if not resend_lock.acquire(blocking=False):
+                messenger.send_text(ALREADY_RESENDING)
+                return
+            try:
+                messenger.send_text(RESENDING_PENDING)
+            finally:
+                background_tasks.add_task(run_resend)
             return
         messenger.send_text(HELP)
 

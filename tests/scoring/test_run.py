@@ -3,7 +3,8 @@ import logging
 import pytest
 
 from job_agent.scoring.models import PendingPosting, PostingEnrichment, ScoreResult
-from job_agent.scoring.run import ScorePendingJobs
+from job_agent.scoring.run import ResendPendingNotifications, ScorePendingJobs
+from job_agent.scoring.models import PendingNotification
 
 
 RESULT = ScoreResult(83, 0.7, "typesafe/jev-1.13")
@@ -207,3 +208,44 @@ def test_input_failure_aborts_before_work(profile, source):
         ScorePendingJobs(profiles, postings, Scorer(events), Enricher(events), Notifier(events), 70).execute()
 
     assert not any(event.startswith(("enrich:", "score:", "notify:")) for event in events)
+
+
+def test_resend_uses_saved_result_and_enrichment_and_marks_only_successes(job):
+    events = []
+    other = job.model_copy(update={"external_id": "124"})
+    saved = [
+        PendingNotification("first", job, RESULT, PostingEnrichment("English B2", "$2000")),
+        PendingNotification("second", other, RESULT, PostingEnrichment()),
+    ]
+
+    class PendingStore:
+        def list_pending_notifications(self):
+            events.append("list")
+            return saved
+
+        def mark_notified(self, document_id):
+            events.append(f"notified:{document_id}")
+
+    class FailingNotifier:
+        def notify(self, posting, result, enrichment):
+            events.append(f"notify:{posting.external_id}:{result.score}:{enrichment.required_language}")
+            if posting.external_id == "123":
+                raise RuntimeError("Telegram unavailable")
+
+    report = ResendPendingNotifications(PendingStore(), FailingNotifier()).execute()
+
+    assert events == ["list", "notify:123:83:English B2", "notify:124:83:None", "notified:second"]
+    assert (report.pending, report.notified, report.failed) == (2, 1, 1)
+
+
+def test_resend_with_no_pending_notifications_does_not_send():
+    class EmptyStore:
+        def list_pending_notifications(self):
+            return []
+
+    class NoSend:
+        def notify(self, *args):
+            raise AssertionError("unexpected send")
+
+    report = ResendPendingNotifications(EmptyStore(), NoSend()).execute()
+    assert (report.pending, report.notified, report.failed) == (0, 0, 0)

@@ -1,4 +1,6 @@
 import importlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -207,3 +209,89 @@ def test_telegram_build_profile_command_stores_profile_for_scoring(webhook, monk
     from job_agent.scoring.firestore import FirestoreScoringStore
 
     assert FirestoreScoringStore(client).load() == profile
+
+
+def test_telegram_resends_saved_pending_notifications_without_rescoring(webhook, monkeypatch, job):
+    client = FakeFirestoreClient()
+    saved = {
+        "status": "PENDING_NOTIFICATION", "job": job.model_dump(),
+        "score": 83, "confidence": 0.7, "score_model": "typesafe/jev-1.13",
+        "required_language": "English B2", "salary_range": "$2000",
+    }
+    client.docs["job_postings/success"] = saved.copy()
+    client.docs["job_postings/failure"] = saved.copy()
+    client.docs["job_postings/unscored"] = {"status": "PENDING", "job": job.model_dump()}
+    monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
+    messages, sent = [], []
+    monkeypatch.setattr(webhook.TelegramNotifier, "send_text", lambda self, text: messages.append(text))
+
+    class FakeOfferNotifier:
+        def notify(self, posting, result, enrichment):
+            sent.append((result.score, enrichment.required_language))
+            if len(sent) == 2:
+                raise RuntimeError("Telegram unavailable")
+
+    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: FakeOfferNotifier())
+
+    response = TestClient(webhook.build_webhook_app()).post(
+        "/webhooks/telegram", headers={"X-Telegram-Bot-Api-Secret-Token": "telegram-secret"},
+        json={"update_id": 21, "message": {"chat": {"id": 42}, "text": "/resend_pending"}},
+    )
+
+    assert response.status_code == 200
+    assert messages == [
+        "Estoy buscando propuestas que hayan quedado pendientes de notificar",
+        "Reenvío terminado: 1 notificadas, 1 fallidas.",
+    ]
+    assert sent == [(83, "English B2"), (83, "English B2")]
+    assert client.docs["job_postings/success"]["status"] == "NOTIFIED"
+    assert client.docs["job_postings/failure"]["status"] == "PENDING_NOTIFICATION"
+    assert client.docs["job_postings/unscored"]["status"] == "PENDING"
+
+
+def test_resend_waits_for_an_active_scoring_run(webhook, monkeypatch, profile, job):
+    client = FakeFirestoreClient()
+    client.docs["profiles/current"] = profile.model_dump()
+    client.docs["job_postings/offer"] = {"status": "PENDING", "job": job.model_dump()}
+    monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(webhook, "JevScoringTool", lambda key: type("Scorer", (), {
+        "score": lambda self, profile, job: ScoreResult(83, 0.7, "typesafe/jev-1.13")})())
+    monkeypatch.setattr(webhook, "JevOfferEnricher", lambda key: type("Enricher", (), {
+        "enrich": lambda self, job: PostingEnrichment()})())
+    started, release = threading.Event(), threading.Event()
+    sent = []
+
+    class BlockingNotifier:
+        def notify(self, *args):
+            sent.append(args)
+            started.set()
+            release.wait(timeout=3)
+
+    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: BlockingNotifier())
+    messages = []
+    monkeypatch.setattr(webhook.TelegramNotifier, "send_text", lambda self, text: messages.append(text))
+    http = TestClient(webhook.build_webhook_app())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        scoring = pool.submit(http.post, "/webhooks/inference", headers={"X-API-Key": "fixture-key"})
+        assert started.wait(timeout=2)
+        resend = pool.submit(http.post, "/webhooks/telegram",
+                             headers={"X-Telegram-Bot-Api-Secret-Token": "telegram-secret"},
+                             json={"update_id": 22, "message": {"chat": {"id": 42}, "text": "/resend_pending"}})
+        assert _wait_for_message(messages)
+        assert messages[0] == "Estoy buscando propuestas que hayan quedado pendientes de notificar"
+        release.set()
+        assert scoring.result(timeout=3).status_code == 200
+        assert resend.result(timeout=3).status_code == 200
+
+    assert len(sent) == 1
+    assert client.docs["job_postings/offer"]["status"] == "NOTIFIED"
+
+
+def _wait_for_message(messages):
+    import time
+    for _ in range(100):
+        if messages:
+            return True
+        time.sleep(0.01)
+    return False

@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from job_contracts import JobPosting
 from job_agent.domain.models import Profile
 
-from .models import PendingPosting, PostingEnrichment, ScoreResult
+from .models import PendingNotification, PendingPosting, PostingEnrichment, ScoreResult
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,28 @@ class FirestoreScoringStore:
                     continue
                 enrichment = PostingEnrichment(language, salary)
             pending.append(PendingPosting(document_id=snapshot.id, job=job, enrichment=enrichment))
+        return pending
+
+    def list_pending_notifications(self) -> list[PendingNotification]:
+        pending: list[PendingNotification] = []
+        for snapshot in self.client.collection("job_postings").stream():
+            data = snapshot.to_dict()
+            if not isinstance(data, dict) or data.get("status") != "PENDING_NOTIFICATION":
+                continue
+            try:
+                job = JobPosting.model_validate(data["job"])
+                score, confidence, model = data["score"], data["confidence"], data["score_model"]
+                language, salary = data.get("required_language"), data.get("salary_range")
+                if (type(score) is not int or type(confidence) not in (int, float)
+                        or not isinstance(model, str) or not model
+                        or not all(value is None or isinstance(value, str) for value in (language, salary))):
+                    raise ValueError("Invalid saved notification fields")
+                pending.append(PendingNotification(
+                    snapshot.id, job, ScoreResult(score, float(confidence), model),
+                    PostingEnrichment(language, salary),
+                ))
+            except (KeyError, TypeError, ValueError, ValidationError):
+                log.warning("Invalid pending notification document %s", snapshot.id)
         return pending
 
     def mark_evaluated(self, document_id: str, result: ScoreResult) -> None:

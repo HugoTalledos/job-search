@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .ports import OfferEnricher, OfferNotifier, PendingPostingStore, ProfileReader, ScoringTool
+from .ports import (OfferEnricher, OfferNotifier, PendingNotificationStore, PendingPostingStore,
+                    ProfileReader, ScoringTool)
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +16,32 @@ class ScoreReport:
     evaluated: int = 0
     failed: int = 0
     notified: int = 0
+
+
+@dataclass(frozen=True)
+class ResendReport:
+    pending: int = 0
+    notified: int = 0
+    failed: int = 0
+
+
+class ResendPendingNotifications:
+    def __init__(self, postings: PendingNotificationStore, notifier: OfferNotifier) -> None:
+        self.postings = postings
+        self.notifier = notifier
+
+    def execute(self) -> ResendReport:
+        pending = self.postings.list_pending_notifications()
+        notified = failed = 0
+        for posting in pending:
+            try:
+                self.notifier.notify(posting.job, posting.result, posting.enrichment)
+                self.postings.mark_notified(posting.document_id)
+                notified += 1
+            except Exception as exc:
+                failed += 1
+                log.error("Failed to resend posting %s (%s)", posting.document_id, type(exc).__name__)
+        return ResendReport(pending=len(pending), notified=notified, failed=failed)
 
 
 class ScorePendingJobs:

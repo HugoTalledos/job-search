@@ -70,6 +70,9 @@ del bot. Comandos disponibles:
 | Comando | Qué hace |
 |---|---|
 | `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
+| `/resend_pending` | Responde inmediatamente «Estoy buscando propuestas que hayan quedado pendientes de notificar». En segundo plano, busca ofertas con estado `PENDING_NOTIFICATION` y reenvía la notificación usando la puntuación y el enriquecimiento guardados. Marca `NOTIFIED` cada envío confirmado; los fallidos conservan `PENDING_NOTIFICATION`. Al terminar informa cuántas se notificaron y cuántas fallaron. |
+
+Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos. Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
 
 Cualquier otro mensaje recibe la lista de comandos. Si escribes `/build-profile` mientras ya se está
 construyendo un perfil, el bot te lo indica y no inicia otro. Igual que la evaluación, las

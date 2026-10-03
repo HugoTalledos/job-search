@@ -193,3 +193,30 @@ def test_below_threshold_score_becomes_evaluated(job):
 
     assert client.docs["job_postings/low"]["status"] == "EVALUATED"
     assert "notified_at" not in client.docs["job_postings/low"]
+
+
+def test_lists_only_valid_pending_notifications_with_saved_score(job, caplog):
+    client = Client()
+    client.docs = {
+        "job_postings/ready": {
+            "status": "PENDING_NOTIFICATION", "job": job.model_dump(),
+            "score": 83, "confidence": 0.7, "score_model": "typesafe/jev-1.13",
+            "required_language": "English B2", "salary_range": "$2000",
+        },
+        "job_postings/empty_enrichment": {
+            "status": "PENDING_NOTIFICATION", "job": job.model_dump(),
+            "score": 75, "confidence": 0.5, "score_model": "typesafe/jev-1.13",
+        },
+        "job_postings/pending": {"status": "PENDING", "job": job.model_dump()},
+        "job_postings/sent": {"status": "NOTIFIED", "job": job.model_dump()},
+        "job_postings/bad": {"status": "PENDING_NOTIFICATION", "job": job.model_dump(), "score": "wrong"},
+    }
+
+    with caplog.at_level(logging.WARNING):
+        notifications = FirestoreScoringStore(client).list_pending_notifications()
+
+    assert [item.document_id for item in notifications] == ["ready", "empty_enrichment"]
+    assert notifications[0].result == ScoreResult(83, 0.7, "typesafe/jev-1.13")
+    assert notifications[0].enrichment == models.PostingEnrichment("English B2", "$2000")
+    assert notifications[1].enrichment == models.PostingEnrichment()
+    assert "bad" in caplog.text and job.description not in caplog.text

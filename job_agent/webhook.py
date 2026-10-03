@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
+from threading import Lock
 
 from fastapi import FastAPI
 from google.cloud import firestore
@@ -22,7 +23,7 @@ from .entrypoints.telegram import add_telegram_webhook
 from .scoring.enrichment import JevOfferEnricher
 from .scoring.firestore import FirestoreScoringStore
 from .scoring.jev import JevScoringTool
-from .scoring.run import ScorePendingJobs
+from .scoring.run import ResendPendingNotifications, ScorePendingJobs
 from .scoring.telegram import TelegramOfferNotifier
 
 
@@ -52,15 +53,17 @@ def build_webhook_app() -> FastAPI:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     client = firestore.Client(project=project)
     store = FirestoreScoringStore(client)
+    execution_lock = Lock()
+    offer_notifier = TelegramOfferNotifier(telegram_token, telegram_chat_id)
     runner = ScorePendingJobs(
         store,
         store,
         JevScoringTool(openrouter_key),
         JevOfferEnricher(openrouter_key),
-        TelegramOfferNotifier(telegram_token, telegram_chat_id),
+        offer_notifier,
         threshold,
     )
-    app = create_app(runner, api_key)
+    app = create_app(runner, api_key, execution_lock=execution_lock)
     telegram = TelegramNotifier(telegram_token, telegram_chat_id)
     add_telegram_webhook(
         app,
@@ -68,6 +71,8 @@ def build_webhook_app() -> FastAPI:
         chat_id=telegram_chat_id.strip(),
         messenger=telegram,
         build_profile=build_profile_use_case(cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram)),
+        resend_pending=ResendPendingNotifications(store, offer_notifier),
+        execution_lock=execution_lock,
     )
     return app
 

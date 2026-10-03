@@ -11,7 +11,10 @@ from .telegram_notifier import TELEGRAM_LIMIT, TelegramNotifier
 
 _LEVEL_ORDER = {"expert": 0, "advanced": 1, "intermediate": 2, "basic": 3}
 
-BOT_COMMANDS = [{"command": "build_profile", "description": "Construir mi perfil profesional"}]
+BOT_COMMANDS = [
+    {"command": "build_profile", "description": "Construir mi perfil profesional"},
+    {"command": "resend_pending", "description": "Reenviar propuestas pendientes"},
+]
 
 
 def _bullets(items: list[str], limit: int) -> list[str]:

@@ -6,7 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from job_agent.entrypoints.telegram import ALREADY_BUILDING, BUILDING, HELP, add_telegram_webhook
+from job_agent.entrypoints.telegram import ALREADY_BUILDING, BUILDING, HELP, RESENDING_PENDING, add_telegram_webhook
+from job_agent.scoring.run import ResendReport
 
 SECRET = {"X-Telegram-Bot-Api-Secret-Token": "hook-secret"}
 
@@ -33,8 +34,39 @@ class Builder:
 def _client(builder=None, messenger=None):
     app = FastAPI()
     add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=messenger or Messenger(),
-                         build_profile=builder or Builder())
+                         build_profile=builder or Builder(), resend_pending=Builder())
     return TestClient(app)
+
+
+def test_resend_pending_replies_immediately_and_runs_in_background():
+    started, release = threading.Event(), threading.Event()
+
+    class Resender:
+        calls = 0
+
+        def execute(self):
+            self.calls += 1
+            started.set()
+            release.wait(timeout=3)
+            return ResendReport(pending=1, notified=1)
+
+    resender, messenger = Resender(), Messenger()
+    app = FastAPI()
+    add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=messenger,
+                         build_profile=Builder(), resend_pending=resender)
+    client = TestClient(app)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        response = pool.submit(client.post, "/webhooks/telegram", headers=SECRET,
+                               json=_update("/resend_pending", update_id=10))
+        assert started.wait(timeout=2)
+        assert messenger.sent[0] == "Estoy buscando propuestas que hayan quedado pendientes de notificar"
+        assert messenger.sent[0] == RESENDING_PENDING
+        release.set()
+        assert response.result(timeout=3).status_code == 200
+
+    assert resender.calls == 1
+    assert messenger.sent[1] == "Reenvío terminado: 1 notificadas, 0 fallidas."
 
 
 def _update(text, chat_id=42, update_id=1):
@@ -145,9 +177,11 @@ def test_second_request_while_building_does_not_start_another_build():
 
 def test_blank_secret_is_rejected_at_startup():
     with pytest.raises(ValueError, match="TELEGRAM_WEBHOOK_SECRET"):
-        add_telegram_webhook(FastAPI(), secret=" ", chat_id="42", messenger=Messenger(), build_profile=Builder())
+        add_telegram_webhook(FastAPI(), secret=" ", chat_id="42", messenger=Messenger(),
+                             build_profile=Builder(), resend_pending=Builder())
 
 
 def test_secret_telegram_would_reject_is_rejected_at_startup():
     with pytest.raises(ValueError, match="TELEGRAM_WEBHOOK_SECRET"):
-        add_telegram_webhook(FastAPI(), secret="has spaces!", chat_id="42", messenger=Messenger(), build_profile=Builder())
+        add_telegram_webhook(FastAPI(), secret="has spaces!", chat_id="42", messenger=Messenger(),
+                             build_profile=Builder(), resend_pending=Builder())

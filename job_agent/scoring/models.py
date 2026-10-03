@@ -23,3 +23,11 @@ class ScoreResult:
     score: int
     confidence: float
     model: str
+
+
+@dataclass(frozen=True)
+class PendingNotification:
+    document_id: str
+    job: JobPosting
+    result: ScoreResult
+    enrichment: PostingEnrichment

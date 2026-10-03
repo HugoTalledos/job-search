@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from _thread import LockType
 from threading import Lock
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
@@ -13,11 +14,11 @@ from ..scoring.run import ScorePendingJobs
 log = logging.getLogger(__name__)
 
 
-def create_app(runner: ScorePendingJobs, api_key: str) -> FastAPI:
+def create_app(runner: ScorePendingJobs, api_key: str, execution_lock: LockType | None = None) -> FastAPI:
     if not api_key.strip():
         raise ValueError("JOB_AGENT_WEBHOOK_API_KEY no está configurada")
     expected_key = api_key.encode("utf-8")
-    run_lock = Lock()
+    run_lock = execution_lock or Lock()
 
     app = FastAPI()
 
