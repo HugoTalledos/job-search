@@ -97,11 +97,27 @@ def test_plan_document_loads_through_the_collector_validation(store, client):
     assert FirestoreCollectorStore(client).load_plan() == expected
 
 
-def test_save_plan_writes_json_document(store, client):
-    plan = compile_plan(SearchPreferences(keywords_include=["Go"], version=3))
-    store.save_plan(plan)
+def test_save_plan_if_version_writes_when_version_matches(store, client):
+    seeded(store)
+    plan = compile_plan(SearchPreferences(keywords_include=["Rust"], version=1))
+    assert store.save_plan_if_version(plan, 1) is True
     assert client.docs[PLAN] == plan.model_dump(mode="json")
     assert store.load_plan() == plan
+
+
+def test_save_plan_if_version_writes_nothing_on_mismatch(store, client):
+    seeded(store)
+    before = dict(client.revisions)
+    plan = compile_plan(SearchPreferences(keywords_include=["Rust"], version=0))
+    assert store.save_plan_if_version(plan, 0) is False
+    assert client.revisions == before
+    assert [q.keywords for q in store.load_plan().search.queries] == ["Go"]
+
+
+def test_save_plan_if_version_without_preferences_writes_nothing(store, client):
+    plan = compile_plan(SearchPreferences(keywords_include=["Rust"], version=1))
+    assert store.save_plan_if_version(plan, 1) is False
+    assert PLAN not in client.docs
 
 
 def test_draft_round_trips(store, client):

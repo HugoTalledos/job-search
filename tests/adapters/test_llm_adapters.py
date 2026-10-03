@@ -125,6 +125,17 @@ def test_openrouter_retries_invalid_answer_once(job, profile, match):
         LlmJobMatcher(bad).score(job, profile, "cv")
 
 
+def test_openrouter_invalid_answer_is_not_logged(caplog, job, profile, match):
+    sentinel = "CANDIDATE-SECRET-7731"
+    bad = json.dumps({"score": sentinel})
+    model = _openrouter([(200, _completion(bad)), (200, _completion(bad))], [])
+    with caplog.at_level("DEBUG"), pytest.raises(LLMError) as err:
+        LlmJobMatcher(model).score(job, profile, "cv")
+    assert "invalid structured answer" in caplog.text
+    assert sentinel not in caplog.text
+    assert sentinel not in str(err.value)
+
+
 def test_openrouter_errors(monkeypatch, job, profile, match):
     monkeypatch.setattr("job_agent.adapters.llm.openrouter_model.time.sleep", lambda s: None)
     seen = []

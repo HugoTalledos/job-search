@@ -77,3 +77,12 @@ def test_unclear_next_to_valid_operation_still_applies():
     edit = PreferenceEdit(operations=[op("add", "keywords_include", ["Go"]), op("unclear", "none", [], "No entendí lo otro")])
     out = apply_operations(SearchPreferences(), edit)
     assert out.preferences.keywords_include == ["Go"] and out.problems == ["No entendí lo otro"]
+
+
+@pytest.mark.parametrize("current, operation", [
+    (SearchPreferences(locations=["Remote", "España"]), op("set", "locations", ["España", "Remote"])),
+    (SearchPreferences(keywords_include=["python"]), op("set", "keywords_include", ["Python"])),
+])
+def test_reorder_or_case_only_set_is_no_change(current, operation):
+    out = apply_operations(current, PreferenceEdit(operations=[operation]))
+    assert out.preferences is None and out.problems == ["No encontré cambios para aplicar."]

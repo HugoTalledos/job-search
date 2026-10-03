@@ -38,8 +38,11 @@ def test_bootstrap_only_builds_llms():
     assert not hasattr(bootstrap, "build_container") and hasattr(bootstrap, "build_llm")
 
 
-def _cli_with_fake_seed(monkeypatch, result=True):
+def _cli_with_fake_seed(monkeypatch, created=True, plan_written=True):
     import job_agent.entrypoints.cli as cli
+    from job_agent.application.preference_models import SeedResult
+
+    result = SeedResult(created=created, plan_written=plan_written)
 
     calls = {}
 
@@ -66,11 +69,23 @@ def test_cli_seed_reads_from_config_path(monkeypatch, tmp_path, capsys):
     prefs, force = calls["seed"]
     assert prefs.keywords_include == ["Django"] and force is True
     assert calls["budgets"].max_queries == 5
-    assert "Preferencias publicadas en Firestore" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Preferencias publicadas en Firestore" in out and "No se generó un plan" not in out
+
+
+def test_cli_seed_reports_when_no_plan_was_compiled(monkeypatch, tmp_path, capsys):
+    cli, _ = _cli_with_fake_seed(monkeypatch, plan_written=False)
+    path = tmp_path / "old.yaml"
+    path.write_text("search:\n  locations: [Remote]\n")
+    assert cli.main(["seed-search-preferences", "--from-config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Preferencias publicadas en Firestore" in out
+    assert ("No se generó un plan de búsqueda: no hay palabras clave ni perfil; se mantiene el plan anterior."
+            in out)
 
 
 def test_cli_seed_reports_existing_preferences(monkeypatch, tmp_path, capsys):
-    cli, _ = _cli_with_fake_seed(monkeypatch, result=False)
+    cli, _ = _cli_with_fake_seed(monkeypatch, created=False, plan_written=False)
     path = tmp_path / "old.yaml"
     path.write_text("search:\n  locations: [Remote]\n")
     assert cli.main(["seed-search-preferences", "--from-config", str(path)]) == 0

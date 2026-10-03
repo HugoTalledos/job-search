@@ -66,14 +66,15 @@ def main(argv: list[str] | None = None) -> int:
             source = args.from_config or args.config or os.environ.get("JOB_AGENT_CONFIG") or ROOT / "config.yaml"
             preferences = legacy_search_preferences(Path(source))
             budgets = load_config(args.config).search_budgets()
-            created = build_search_preferences_manager(budgets).seed(preferences, force=args.force)
+            result = build_search_preferences_manager(budgets).seed(preferences, force=args.force)
         except (ValueError, ValidationError) as exc:
             print(f"Error de configuración: {exc}", file=sys.stderr)
             return 2
-        print(
-            "Preferencias publicadas en Firestore"
-            if created
-            else "Ya existen preferencias; usa --force para reemplazarlas"
-        )
+        if not result.created:
+            print("Ya existen preferencias; usa --force para reemplazarlas")
+            return 0
+        print("Preferencias publicadas en Firestore")
+        if not result.plan_written:
+            print("No se generó un plan de búsqueda: no hay palabras clave ni perfil; se mantiene el plan anterior.")
         return 0
     return 0

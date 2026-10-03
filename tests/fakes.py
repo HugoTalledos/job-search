@@ -74,8 +74,11 @@ class MemorySearchSettings:
         self.plan = compile(self.prefs) or self.plan
         return True
 
-    def save_plan(self, plan):
+    def save_plan_if_version(self, plan, expected_version):
+        if self.prefs is None or self.prefs.version != expected_version:
+            return False
         self.plan = plan
+        return True
 
     def create_draft(self, draft):
         self.drafts[draft.draft_id] = draft

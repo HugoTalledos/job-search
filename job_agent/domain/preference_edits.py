@@ -100,7 +100,7 @@ def apply_operations(current: SearchPreferences, edit: PreferenceEdit) -> EditOu
     except ValidationError:
         problems.append("Algún valor no es válido para las preferencias.")
         return EditOutcome(None, problems)
-    if updated.content_equals(current):
+    if updated.content_equals(current) or not preference_diff(current, updated):  # reorder/case-only is no change
         return EditOutcome(None, [*problems, NO_CHANGES])
     return EditOutcome(updated, problems)
 

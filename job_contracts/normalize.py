@@ -60,6 +60,6 @@ def exclusion_reason(
         return "empresa_excluida"
     title = f" {normalize_title(job.title)} "
     for word in exclude_title_keywords:
-        if (w := normalize_keyword(word)) and f" {w} " in title:
+        if (w := normalize_title(word)) and f" {w} " in title:
             return "palabra_excluida_en_titulo"
     return None

@@ -41,8 +41,8 @@ search:
 matching:
   min_score_to_notify: 70   # notificar ofertas con afinidad >= 70/100
 
-# Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match)
-# y ajustar la hoja de vida (tailor).
+# Modelo de lenguaje para las tareas del agente: inferir el perfil (profile), puntuar ofertas (match),
+# ajustar la hoja de vida (tailor) e interpretar cambios de preferencias de búsqueda (preferences).
 llm:
   provider: openrouter          # anthropic | openrouter
   model: qwen/qwen3.7-flash                      # vacío con anthropic = claude-opus-5-5. Con openrouter es obligatorio.
@@ -53,5 +53,6 @@ llm:
   models: {}
   #   match: google/gemini-2.5-flash
   #   tailor: anthropic/claude-sonnet-4.5
+  #   preferences: google/gemini-2.5-flash
   openrouter:
     reasoning: false           # true = enviar el nivel de esfuerzo a modelos con razonamiento

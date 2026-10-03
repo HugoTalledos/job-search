@@ -43,6 +43,23 @@ def test_exclusion_reason(job):
     assert exclusion_reason(job, [], ["engine"]) is None  # whole words only
 
 
+@pytest.mark.parametrize("title, word", [
+    ("Backend Developer", "backend"),
+    ("Sr. Engineer", "Sr"),
+    ("Ingeniero de datos", "ingeniero"),
+    ("Frontend Dev", "frontend"),
+    ("Fullstack Engineer", "fullstack"),
+    ("Python Dev", "dev"),
+])
+def test_exclusion_words_are_normalised_like_titles(job, title, word):
+    assert exclusion_reason(job.model_copy(update={"title": title}), [], [word]) == "palabra_excluida_en_titulo"
+
+
+def test_exclusion_words_still_match_whole_words(job):
+    assert exclusion_reason(job.model_copy(update={"title": "Engineer"}), [], ["engine"]) is None
+    assert exclusion_reason(job.model_copy(update={"title": "Engineer"}), [], ["  "]) is None
+
+
 def test_enum_lists_are_cleaned_and_deduplicated():
     prefs = SearchPreferences(work_types=[" Remote", "remote", "HYBRID", " "], experience_levels=["Entry ", "entry"])
     assert prefs.work_types == ["remote", "hybrid"] and prefs.experience_levels == ["entry"]

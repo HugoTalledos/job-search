@@ -45,6 +45,12 @@ class Proposal(BaseModel):
     problems: list[str] = []
 
 
+class SeedResult(BaseModel):
+    created: bool  # False: preferences already existed and nothing was written
+    plan_written: bool = False  # False with created: no keywords nor profile, the previous plan is kept
+
+
 class RebuildResult(BaseModel):
-    status: Literal["rebuilt", "no_keywords", "no_preferences"]
+    # superseded: the preferences changed while rebuilding; that change already wrote its own plan.
+    status: Literal["rebuilt", "no_keywords", "no_preferences", "superseded"]
     plan: CollectorPlan | None = None

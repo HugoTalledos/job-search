@@ -21,11 +21,6 @@ class FirestoreCollectorStore:
             raise ValueError("No search plan in Firestore at settings/search_plan")
         return CollectorPlan.model_validate(snapshot.to_dict())
 
-    def save_plan(self, plan: CollectorPlan) -> None:
-        self.client.collection("settings").document("search_plan").set({
-            **plan.model_dump(), "updated_at": datetime.now(timezone.utc),
-        })
-
     def known_keys(self, leads: list[JobLead]) -> set[str]:
         if not leads:
             return set()

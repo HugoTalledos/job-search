@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -91,3 +93,14 @@ def test_legacy_preferences_require_some_legacy_key(tmp_path):
     path.write_text("search:\n  max_queries: 4\n")
     with pytest.raises(ValueError):
         legacy_search_preferences(path)
+
+
+def test_config_yaml_llm_comment_lists_every_task():
+    from typing import get_args
+
+    from job_agent.config import LlmConfig
+
+    text = (Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8")
+    comment = text[:text.index("\nllm:")].rsplit("\n\n", 1)[-1]
+    tasks = get_args(get_args(LlmConfig.model_fields["models"].annotation)[0])
+    assert tasks and all(f"({task})" in comment for task in tasks), comment

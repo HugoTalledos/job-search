@@ -12,7 +12,7 @@ from job_contracts import CollectorPlan, SearchPreferences
 from ..domain.policies import SearchBudgets, build_search_plan
 from ..domain.preference_edits import apply_operations, preference_diff
 from .ports import PreferenceInterpreter, ProfileStore, SearchSettingsStore
-from .preference_models import DraftResolution, PreferenceDraft, PreferencesView, Proposal, RebuildResult
+from .preference_models import DraftResolution, PreferenceDraft, PreferencesView, Proposal, RebuildResult, SeedResult
 
 DRAFT_TTL = timedelta(hours=24)
 
@@ -42,9 +42,17 @@ class ManageSearchPreferences:
     def _compile(self, preferences: SearchPreferences) -> CollectorPlan | None:
         return build_search_plan(preferences, self._profile(), self.budgets, self.clock()).plan
 
-    def seed(self, preferences: SearchPreferences, *, force: bool) -> bool:
-        """Publish the initial preferences and their plan; False if some exist and ``force`` is not set."""
-        return self.store.seed(preferences, self._compile, force=force, now=self.clock())
+    def seed(self, preferences: SearchPreferences, *, force: bool) -> SeedResult:
+        """Publish the initial preferences and their plan; not created if some exist and ``force`` is not set."""
+        compiled: list[CollectorPlan | None] = []
+
+        def compile_and_record(p: SearchPreferences) -> CollectorPlan | None:
+            plan = self._compile(p)
+            compiled.append(plan)  # a transaction may retry: the last attempt is the committed one
+            return plan
+
+        created = self.store.seed(preferences, compile_and_record, force=force, now=self.clock())
+        return SeedResult(created=created, plan_written=created and bool(compiled) and compiled[-1] is not None)
 
     def show(self) -> PreferencesView:
         return PreferencesView(preferences=self.store.load_preferences(), plan=self.store.load_plan())
@@ -87,5 +95,6 @@ class ManageSearchPreferences:
         plan = self._compile(preferences)
         if plan is None:
             return RebuildResult(status="no_keywords")
-        self.store.save_plan(plan)
+        if not self.store.save_plan_if_version(plan, preferences.version):
+            return RebuildResult(status="superseded")  # an Apply committed meanwhile and wrote its own plan
         return RebuildResult(status="rebuilt", plan=plan)

@@ -47,6 +47,13 @@ def strict_json_schema(schema: type[BaseModel]) -> dict:
     return result
 
 
+def _describe(exc: Exception) -> str:
+    """Error summary safe to log: never echoes the model output (it may quote the candidate's text)."""
+    if isinstance(exc, ValidationError):
+        return f"{type(exc).__name__} ({exc.error_count()} errors)"
+    return type(exc).__name__
+
+
 def _parse_json(text: str):
     text = text.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
@@ -104,7 +111,7 @@ class OpenRouterStructuredModel:
         try:
             return schema.model_validate(_parse_json(text))
         except (json.JSONDecodeError, ValueError, ValidationError) as exc:
-            log.warning("[%s] invalid structured answer, retrying once: %s", self.name, str(exc)[:300])
+            log.warning("[%s] invalid structured answer, retrying once: %s", self.name, _describe(exc))
             messages += [
                 {"role": "assistant", "content": text},
                 {"role": "user", "content": f"That answer is not valid: {str(exc)[:1000]}\n"
@@ -114,7 +121,7 @@ class OpenRouterStructuredModel:
             try:
                 return schema.model_validate(_parse_json(text))
             except (json.JSONDecodeError, ValueError, ValidationError) as exc2:
-                raise LLMError(f"{self.name} did not return valid {schema.__name__}: {str(exc2)[:300]}") from exc2
+                raise LLMError(f"{self.name} did not return valid {schema.__name__}: {_describe(exc2)}") from exc2
 
     @staticmethod
     def _part(block: dict) -> dict:

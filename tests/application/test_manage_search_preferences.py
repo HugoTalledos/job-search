@@ -35,19 +35,21 @@ def test_seed_compiles_plan_and_does_not_overwrite_without_force(profile):
     store = SeedStore()
     uc = _use_case(store, profiles)
 
-    assert uc.seed(SearchPreferences(keywords_include=["Django"], locations=["Remote"]), force=False) is True
+    result = uc.seed(SearchPreferences(keywords_include=["Django"], locations=["Remote"]), force=False)
+    assert result.created is True and result.plan_written is True
     assert [q.keywords for q in store.plan.search.queries] == ["Django", profile.target_roles[0]]
     assert len(store.plan.search.queries) == 2  # budget applied
 
-    assert uc.seed(SearchPreferences(keywords_include=["Rust"]), force=False) is False
+    assert uc.seed(SearchPreferences(keywords_include=["Rust"]), force=False).created is False
     assert store.prefs.keywords_include == ["Django"]
-    assert uc.seed(SearchPreferences(keywords_include=["Rust"]), force=True) is True
+    assert uc.seed(SearchPreferences(keywords_include=["Rust"]), force=True).created is True
     assert store.prefs.keywords_include == ["Rust"]
 
 
 def test_seed_without_profile_or_keywords_writes_no_plan():
     store = SeedStore()
-    assert _use_case(store, MemoryProfileStore()).seed(SearchPreferences(), force=False) is True
+    result = _use_case(store, MemoryProfileStore()).seed(SearchPreferences(), force=False)
+    assert result.created is True and result.plan_written is False
     assert store.plan is None
 
 
@@ -215,3 +217,26 @@ def test_rebuild_statuses(profiles):
     store.plan = "OLD"
     uc = ManageSearchPreferences(store=store, profiles=MemoryProfileStore(), budgets=SearchBudgets(), clock=lambda: NOW)
     assert uc.rebuild_plan().status == "no_keywords" and store.plan == "OLD"
+
+
+def test_rebuild_is_superseded_when_an_apply_commits_meanwhile(profiles):
+    class RacingStore(MemorySearchSettings):
+        def load_preferences(self):
+            loaded = super().load_preferences()
+            # an Apply commits (new version + its own plan) right after the rebuild read the preferences
+            self.prefs = loaded.model_copy(update={"version": loaded.version + 1, "keywords_include": ["Rust"]})
+            self.plan = "FRESH"
+            return loaded
+
+    store = RacingStore()
+    store.seed(SearchPreferences(keywords_include=["Django"]), lambda p: None, force=False, now=NOW)
+    uc = ManageSearchPreferences(store=store, profiles=profiles, budgets=SearchBudgets(), clock=lambda: NOW)
+    result = uc.rebuild_plan()
+    assert result.status == "superseded" and result.plan is None
+    assert store.plan == "FRESH"
+
+
+def test_rebuild_writes_plan_for_the_version_it_read(service, store):
+    result = service.rebuild_plan()
+    assert result.status == "rebuilt" and store.plan == result.plan
+    assert result.plan.preferences_version == store.prefs.version

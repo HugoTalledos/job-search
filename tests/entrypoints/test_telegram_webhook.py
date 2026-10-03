@@ -711,6 +711,15 @@ def test_build_profile_reports_a_failed_rebuild_and_keeps_the_profile(pref, monk
     assert "SECRET-PLAN" not in caplog.text
 
 
+def test_build_profile_superseded_rebuild_is_silent(pref, monkeypatch):
+    from job_agent.application.preference_models import RebuildResult
+
+    monkeypatch.setattr(pref.use_case, "rebuild_plan", lambda: RebuildResult(status="superseded"))
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/build_profile"))
+    assert pref.builder.calls == 1
+    assert pref.messenger.sent == [BUILDING]
+
+
 def test_failed_build_does_not_rebuild_the_plan():
     preferences = NoPreferences()
     app = FastAPI()

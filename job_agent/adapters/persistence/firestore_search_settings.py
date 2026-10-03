@@ -67,8 +67,16 @@ class FirestoreSearchSettingsStore:
 
         return seed_preferences(self.client.transaction())
 
-    def save_plan(self, plan: CollectorPlan) -> None:
-        self.plan.set(plan.model_dump(mode="json"))
+    def save_plan_if_version(self, plan: CollectorPlan, expected_version: int) -> bool:
+        @firestore.transactional
+        def save(transaction) -> bool:
+            current = self.preferences.get(transaction=transaction).to_dict()
+            if current is None or _version(current) != expected_version:
+                return False
+            transaction.set(self.plan, plan.model_dump(mode="json"))
+            return True
+
+        return save(self.client.transaction())
 
     def create_draft(self, draft: PreferenceDraft) -> None:
         self._draft(draft.draft_id).set(draft.model_dump(mode="json"))
