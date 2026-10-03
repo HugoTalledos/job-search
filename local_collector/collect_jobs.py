@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from job_contracts.models import CollectionReport
+from job_contracts.normalize import exclusion_reason
 from .ports import CollectorStore, JobCollectorSource
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,9 @@ class CollectJobs:
             errors=[*batch.search_errors, *batch.detail_errors],
         )
         for job in batch.jobs:
+            if exclusion_reason(job, plan.exclude_companies, plan.exclude_title_keywords):
+                report.excluded += 1
+                continue
             try:
                 if self.store.save(job):
                     report.inserted += 1

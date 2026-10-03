@@ -1,8 +1,8 @@
 import pytest
 
 from local_collector.adapters.firestore_store import FirestoreCollectorStore
-from job_agent.domain.models import JobLead
-from job_agent.domain.policies import job_key, lead_key
+from job_contracts import JobLead
+from job_contracts.keys import job_key, lead_key
 
 
 class FakeSnapshot:

@@ -1,89 +1,14 @@
-"""Pure business rules: posting identity, de-duplication, normalisation, profile freshness and changes."""
+"""Pure business rules: profile freshness and changes (normalisation lives in job_contracts)."""
 
 from __future__ import annotations
 
 import hashlib
-import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from .models import JobLead, JobPosting, Profile, StoredProfile
+from job_contracts.normalize import normalize_company, normalize_keyword as _norm, normalize_title  # noqa: F401
 
-# --- Normalisation ---------------------------------------------------------------------------------
-
-_COMPANY_SUFFIXES = {
-    "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company", "plc", "gmbh",
-    "ag", "bv", "nv", "srl", "sl", "sa", "sas", "sac", "sae", "ltda", "spa", "cv", "de", "the",
-}
-_TITLE_ABBREVIATIONS = {
-    "sr": "senior", "snr": "senior", "jr": "junior", "jnr": "junior", "ssr": "semisenior", "semi": "semi",
-    "dev": "developer", "devs": "developer", "eng": "engineer", "engr": "engineer", "mgr": "manager",
-    "swe": "software engineer", "sde": "software engineer", "fullstack": "full stack", "backend": "back end",
-    "frontend": "front end", "ii": "2", "iii": "3", "desarrollador": "developer", "ingeniero": "engineer",
-}
-_TITLE_NOISE = {
-    "remote", "remoto", "remota", "hybrid", "hibrido", "hibrida", "onsite", "presencial", "wfh", "latam",
-    "anywhere", "urgent", "urgente", "hiring", "f", "m", "d", "x", "w", "h",
-}
-
-
-def _ascii(text: str) -> str:
-    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", _ascii(text)).strip()
-
-
-def normalize_company(name: str) -> str:
-    words = _norm(re.sub(r"[.,]", "", name)).split()  # "S.A.S." -> "sas"
-    while words and words[-1] in _COMPANY_SUFFIXES:
-        words.pop()
-    while words and words[0] == "the":
-        words.pop(0)
-    return " ".join(words)
-
-
-def normalize_title(title: str) -> str:
-    text = re.sub(r"[(\[{][^)\]}]*[)\]}]", " ", _ascii(title))  # "(m/f/d)", "[Remote]"
-    words = []
-    for word in _norm(text).replace("on site", "onsite").split():
-        word = _TITLE_ABBREVIATIONS.get(word, word)
-        words += [w for w in word.split() if w not in _TITLE_NOISE]
-    return " ".join(words)
-
-
-# --- Identity and duplicates ---------------------------------------------------------------------
-
-
-def _key(source: str, external_id: str, url: str, fallback: str) -> str:
-    if external_id:
-        basis = f"{_norm(source)}:{external_id.strip()}"
-    elif url:
-        basis = re.sub(r"[?#].*$", "", url.strip().lower()).rstrip("/")
-    else:
-        basis = fallback
-    return hashlib.sha1(basis.encode()).hexdigest()[:16]
-
-
-def job_key(job: JobPosting) -> str:
-    """Stable id: source id when present, else canonical url, else company+title."""
-    return _key(job.source, job.external_id, job.url, duplicate_signature(job) or _norm(job.description[:200]))
-
-
-def lead_key(lead: JobLead) -> str:
-    """Same key the posting will get once fetched, so seen ids are skipped before fetching details."""
-    return _key(lead.source, lead.external_id, lead.url, "")
-
-
-def duplicate_signature(job: JobPosting) -> str:
-    """Identifies the same role reposted under a new id or found on another board."""
-    company, words = normalize_company(job.company), sorted(set(normalize_title(job.title).split()))
-    if not company or not words:
-        return ""  # unknown company or title: cannot tell duplicates apart
-    return f"{company}|{' '.join(words)}"  # word order does not matter
-
+from .models import Profile, StoredProfile
 
 # --- Profile freshness --------------------------------------------------------------------
 

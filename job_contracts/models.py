@@ -1,5 +1,6 @@
 """Firestore document payloads shared by independently deployed components."""
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -46,6 +47,11 @@ class SourceCollection(BaseModel):
 class CollectorPlan(BaseModel):
     search: SearchPlan
     max_details_per_run: int = Field(gt=0)
+    exclude_companies: list[str] = []
+    exclude_title_keywords: list[str] = []
+    preferences_version: int = 0
+    profile_fingerprint: str = ""
+    built_at: datetime | None = None
 
 
 class CollectionReport(BaseModel):
@@ -53,4 +59,5 @@ class CollectionReport(BaseModel):
     known: int = 0
     fetched: int = 0
     inserted: int = 0
+    excluded: int = 0
     errors: list[str] = Field(default_factory=list)

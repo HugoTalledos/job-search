@@ -1,8 +1,8 @@
 import pytest
 
 from local_collector.collect_jobs import CollectJobs
-from job_agent.domain.models import CollectorPlan, JobLead, SearchPlan, SearchQuery, SourceCollection
-from job_agent.domain.policies import job_key, lead_key
+from job_contracts import CollectorPlan, JobLead, SearchPlan, SearchQuery, SourceCollection
+from job_contracts.keys import job_key, lead_key
 
 
 class MemoryStore:
@@ -109,3 +109,14 @@ def test_collector_reports_search_failure_instead_of_success():
 
     assert report.inserted == 0
     assert report.errors == ["boom: rate limited"]
+
+
+def test_collector_drops_excluded_company_and_title_before_saving(job):
+    plan = _plan(max_details=5).model_copy(update={"exclude_companies": ["ACME"], "exclude_title_keywords": ["intern"]})
+    store = MemoryStore(plan)
+    jobs = [job.model_copy(update={"external_id": "1", "company": "Acme Inc."}),
+            job.model_copy(update={"external_id": "2", "title": "Backend Intern"}),
+            job.model_copy(update={"external_id": "3", "company": "Globex"})]
+    report = CollectJobs(MemorySource(jobs, store), store).execute()
+    assert [j.external_id for j in store.jobs.values()] == ["3"]
+    assert (report.fetched, report.excluded, report.inserted) == (3, 2, 1)

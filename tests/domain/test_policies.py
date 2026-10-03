@@ -2,27 +2,16 @@ from datetime import datetime, timedelta, timezone
 
 from job_agent.domain.models import Skill, StoredProfile
 from job_agent.domain.policies import (
-    job_key,
     profile_changes,
     resume_fingerprint,
 )
 
 
-def test_job_key_uses_external_id_and_ignores_tracking(job):
-    assert job_key(job) == job_key(job.model_copy(update={"url": "https://linkedin.com/jobs/view/123"}))
-    no_id = job.model_copy(update={"external_id": ""})
-    assert job_key(no_id) == job_key(no_id.model_copy(update={"url": job.url.split("?")[0]}))
-
-
-def test_normalisation_and_duplicate_signature(job):
-    from job_agent.domain.policies import duplicate_signature, normalize_company, normalize_title
+def test_normalisation():
+    from job_agent.domain.policies import normalize_company, normalize_title
 
     assert normalize_company("Globant S.A.S.") == normalize_company("GLOBANT") == "globant"
     assert normalize_title("Sr. Backend Engineer (Remote)") == "senior back end engineer"
-    a = job.model_copy(update={"title": "Desarrollador Backend Sr", "company": "Acme Inc."})
-    b = job.model_copy(update={"title": "Sr. Backend Developer - Remoto", "company": "ACME"})
-    assert duplicate_signature(a) == duplicate_signature(b)
-    assert duplicate_signature(job.model_copy(update={"company": ""})) == ""  # unknown: never a duplicate
 
 
 def test_profile_refresh_policy(profile):
