@@ -34,8 +34,11 @@ def format_offer_message(job: JobPosting, result: ScoreResult, enrichment: Posti
     if enrichment.salary_range:
         lines.append(f"💰 Salario: {_escaped(enrichment.salary_range, 300)}")
     if job.url:
-        lines.append(f"🔗 {_escaped(job.url, 1200)}")
-    return "\n".join(lines)
+        lines.append(f'🔗 <a href="{html.escape(job.url, quote=True)}">Ver publicación</a>')
+    message = "\n".join(lines)
+    if len(message) > 4096:
+        raise ValueError("Telegram message exceeds limit")
+    return message
 
 
 class TelegramOfferNotifier:
