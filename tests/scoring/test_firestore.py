@@ -5,6 +5,7 @@ from google.cloud import firestore
 from pydantic import ValidationError
 
 from job_agent.scoring.firestore import FirestoreScoringStore
+from job_agent.scoring import models
 from job_agent.scoring.models import ScoreResult
 
 
@@ -85,6 +86,8 @@ def test_lists_explicit_and_legacy_pending_with_original_ids(job, caplog):
         "job_postings/explicit": {"status": "PENDING", "job": job.model_dump()},
         "job_postings/legacy": {"job": job.model_dump()},
         "job_postings/done": {"status": "EVALUATED", "job": job.model_dump()},
+        "job_postings/waiting": {"status": "PENDING_NOTIFICATION", "job": job.model_dump()},
+        "job_postings/notified": {"status": "NOTIFIED", "job": job.model_dump()},
         "job_postings/unknown": {"status": "OTHER", "job": job.model_dump()},
         "job_postings/broken": {"status": "PENDING", "job": {"title": "Incomplete"}},
     }
@@ -125,3 +128,68 @@ def test_updates_score_on_original_document_without_overwriting_job(job):
     assert fields["evaluated_at"] is firestore.SERVER_TIMESTAMP
     assert client.docs[path]["job"] == job.model_dump()
     assert client.docs[path]["source"] == "linkedin"
+
+
+def test_pending_posting_reuses_saved_enrichment_even_when_fields_are_empty(job):
+    client = Client()
+    client.docs["job_postings/enriched"] = {
+        "status": "PENDING", "job": job.model_dump(), "enriched_at": "previous",
+        "required_language": None, "salary_range": None,
+    }
+    client.docs["job_postings/fresh"] = {"status": "PENDING", "job": job.model_dump()}
+
+    pending = FirestoreScoringStore(client).list_pending()
+
+    assert pending[0].enrichment == models.PostingEnrichment()
+    assert pending[1].enrichment is None
+
+
+def test_invalid_saved_enrichment_skips_document_and_logs_only_id(job, caplog):
+    client = Client()
+    client.docs["job_postings/bad"] = {
+        "status": "PENDING", "job": job.model_dump(), "enriched_at": "previous",
+        "required_language": ["English"],
+    }
+    client.docs["job_postings/good"] = {"status": "PENDING", "job": job.model_dump()}
+
+    with caplog.at_level(logging.WARNING):
+        pending = FirestoreScoringStore(client).list_pending()
+
+    assert [item.document_id for item in pending] == ["good"]
+    assert "bad" in caplog.text
+    assert job.description not in caplog.text
+
+
+def test_enrichment_and_score_updates_preserve_original_job(job):
+    client = Client()
+    path = "job_postings/original"
+    client.docs[path] = {"status": "PENDING", "job": job.model_dump(), "source": "linkedin"}
+    store = FirestoreScoringStore(client)
+
+    store.mark_enriched("original", models.PostingEnrichment("English B2", "$2,000 - $3,000"))
+    store.mark_scored("original", ScoreResult(83, 0.7, "typesafe/jev-1.13"), notify=True)
+    store.mark_notified("original")
+
+    assert [update[0] for update in client.updates] == [path, path, path]
+    enriched, scored, notified = [fields for _, fields in client.updates]
+    assert enriched == {
+        "required_language": "English B2", "salary_range": "$2,000 - $3,000",
+        "enriched_at": firestore.SERVER_TIMESTAMP,
+    }
+    assert scored == {
+        "status": "PENDING_NOTIFICATION", "score": 83, "confidence": 0.7,
+        "score_model": "typesafe/jev-1.13", "evaluated_at": firestore.SERVER_TIMESTAMP,
+    }
+    assert notified == {"status": "NOTIFIED", "notified_at": firestore.SERVER_TIMESTAMP}
+    assert client.docs[path]["job"] == job.model_dump()
+    assert client.docs[path]["source"] == "linkedin"
+
+
+def test_below_threshold_score_becomes_evaluated(job):
+    client = Client()
+    client.docs["job_postings/low"] = {"status": "PENDING", "job": job.model_dump()}
+
+    FirestoreScoringStore(client).mark_scored("low", ScoreResult(69, 0.6, "typesafe/jev-1.13"), notify=False)
+
+    assert client.docs["job_postings/low"]["status"] == "EVALUATED"
+    assert "notified_at" not in client.docs["job_postings/low"]

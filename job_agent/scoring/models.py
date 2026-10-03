@@ -6,9 +6,16 @@ from job_contracts import JobPosting
 
 
 @dataclass(frozen=True)
+class PostingEnrichment:
+    required_language: str | None = None
+    salary_range: str | None = None
+
+
+@dataclass(frozen=True)
 class PendingPosting:
     document_id: str
     job: JobPosting
+    enrichment: PostingEnrichment | None = None
 
 
 @dataclass(frozen=True)
