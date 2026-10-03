@@ -21,24 +21,13 @@ repositories: []               # repos adicionales en cualquier remoto git, p. e
 profile_refresh_days: 30
 
 search:
-  # 1) Plan de búsqueda (determinista): palabras clave × ubicaciones.
-  #    Palabras clave = extra_keywords + los primeros cargos objetivo de tu perfil + sus keywords.
-  locations: ["Remote", "Colombia", "España"]
-  extra_keywords: []
+  # Las preferencias de búsqueda (ubicaciones, palabras clave, antigüedad, modalidad, nivel y
+  # exclusiones) viven en Firestore (settings/search_preferences) y se editan con /preferencias en
+  # Telegram. Aquí solo quedan las fuentes y los presupuestos por corrida.
   max_roles_from_profile: 3
   max_queries: 8                 # máximo de búsquedas por corrida (cada una es una búsqueda en LinkedIn)
 
-  # 2) Filtros que aplica LinkedIn en la propia búsqueda.
-  posted_within_days: 2          # 2 días cubre corridas perdidas si el Mac estuvo apagado; lo ya visto se descarta igual
-  work_types: []                 # remote, hybrid, on_site  (vacío = cualquiera)
-  experience_levels: []          # internship, entry, associate, mid_senior, director, executive
-
-  # 3) Filtros deterministas del agente, antes de llamar a Claude.
-  #    (además: ids ya vistos, duplicados por empresa+cargo normalizados, publicaciones antiguas)
-  exclude_companies: ["Puntored", "puntored"]          # se comparan normalizados: "Acme Inc." = "ACME"
-  exclude_title_keywords: []     # p. ej. ["intern", "practicante", "lead"]
-
-  # 4) Presupuestos por corrida.
+  # Presupuestos por corrida.
   max_details_per_run: 20        # ofertas nuevas cuyo detalle se descarga de LinkedIn (~10-30 s cada una)
   sources:
     linkedin:

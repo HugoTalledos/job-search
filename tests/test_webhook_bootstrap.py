@@ -369,3 +369,76 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
 @pytest.mark.parametrize("token, bot_id", [("123456:ABC-def", 123456), ("telegram-fixture-token", None), ("", None)])
 def test_bot_id_comes_from_the_token_prefix(webhook, token, bot_id):
     assert webhook._bot_id(token) == bot_id
+
+
+def test_preferences_flow_end_to_end_through_the_wired_webhook(webhook, monkeypatch):
+    import httpx
+
+    from job_agent.domain.preference_edits import PreferenceEdit, PreferenceOperation
+    from job_contracts import SearchPreferences
+    from tests.adapters.test_firestore_cv_tracking import Client as TransactionalClient
+
+    client = TransactionalClient()
+    monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(webhook, "load_config", lambda: Config())
+    from job_agent.adapters.persistence import FirestoreSearchSettingsStore
+    from job_agent.application.manage_search_preferences import ManageSearchPreferences
+    from job_agent.domain.policies import SearchBudgets
+    from job_agent.adapters.persistence import FirestoreProfileStore
+
+    ManageSearchPreferences(
+        store=FirestoreSearchSettingsStore(client), profiles=FirestoreProfileStore(client),
+        budgets=SearchBudgets(max_queries=8, max_roles_from_profile=3, max_details_per_run=20),
+    ).seed(SearchPreferences(keywords_include=["Python"]), force=False)
+    assert client.docs["settings/search_preferences"]["version"] == 1
+
+    interpreted = []
+
+    class FakeInterpreter:
+        def __init__(self, model):
+            pass
+
+        def interpret(self, current, request):
+            interpreted.append(request)
+            return PreferenceEdit(operations=[PreferenceOperation(
+                action="add", field="keywords_include", values=["Go"], explanation="")])
+
+    monkeypatch.setattr(webhook, "LlmPreferenceInterpreter", FakeInterpreter)
+    telegram_calls, texts = [], []
+
+    def fake_post(url, json=None, **kwargs):
+        telegram_calls.append((url.rsplit("/", 1)[1], json))
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(webhook.TelegramNotifier, "send_text", lambda self, text: texts.append(text))
+    http = TestClient(webhook.build_webhook_app())
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "telegram-secret"}
+    private = {"chat": {"id": 42, "type": "private"}, "from": {"id": 42, "is_bot": False}}
+
+    def send(update_id, text):
+        return http.post("/webhooks/telegram", headers=headers, json={
+            "update_id": update_id, "message": {"message_id": update_id, **private, "text": text}})
+
+    assert send(1, "/preferencias").status_code == 200
+    assert interpreted == []
+    method, shown = telegram_calls[-1]
+    assert method == "sendMessage" and "Python" in shown["text"] and "versión 1" in shown["text"]
+
+    assert send(2, "/preferencias quiero Go").status_code == 200
+    assert interpreted == ["quiero Go"] and texts == ["Revisando tus preferencias…"]
+    method, proposal = telegram_calls[-1]
+    assert method == "sendMessage"
+    apply_data = proposal["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    assert apply_data.startswith("pref:apply:")
+
+    tap = http.post("/webhooks/telegram", headers=headers, json={"update_id": 3, "callback_query": {
+        "id": "cb1", "data": apply_data, "from": private["from"],
+        "message": {"message_id": 77, **private}}})
+
+    assert tap.status_code == 200
+    plan = client.docs["settings/search_plan"]
+    assert {q["keywords"] for q in plan["search"]["queries"]} >= {"Go", "Python"}
+    assert plan["preferences_version"] == 2
+    assert client.docs["settings/search_preferences"]["version"] == 2
+    assert [m for m, _ in telegram_calls[-2:]] == ["answerCallbackQuery", "editMessageText"]

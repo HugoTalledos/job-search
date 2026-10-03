@@ -73,9 +73,10 @@ del bot. Comandos disponibles:
 |---|---|
 | `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
 | `/resend_pending` | Responde inmediatamente «Estoy buscando propuestas que hayan quedado pendientes de notificar». En segundo plano, busca ofertas con estado `PENDING_NOTIFICATION` y reenvía la notificación usando la puntuación y el enriquecimiento guardados. Marca `NOTIFIED` cada envío confirmado; los fallidos conservan `PENDING_NOTIFICATION`. Al terminar informa cuántas se notificaron y cuántas fallaron. |
+| `/preferencias` | Sin texto, muestra tus preferencias de búsqueda guardadas y cuántas búsquedas tiene el plan vigente (sin usar el LLM). Con texto (`/preferencias quiero Go y sin Acme`), responde «Revisando tus preferencias…», interpreta la petición con el LLM (tarea `preferences`), y muestra el cambio y las primeras búsquedas con los botones Aplicar y Cancelar. Nada cambia hasta pulsar Aplicar; al aplicar se guardan `settings/search_preferences` (versión + 1) y el plan `settings/search_plan` que lee el buscador. Las propuestas caducan a las 24 horas. |
 | `/ajustar_cv` (como respuesta a un mensaje de oferta del bot) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. |
 
-Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos. Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
+Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos y los tipos de actualización (`message` y `callback_query`, necesario para los botones de `/preferencias`). Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
 
 Cualquier otro mensaje recibe la lista de comandos. Si escribes `/build-profile` mientras ya se está
 construyendo un perfil, el bot te lo indica y no inicia otro. Igual que la evaluación, las
@@ -157,14 +158,40 @@ Para preparar el buscador:
    python3 scripts/macos/install_schedule.py --component collector
    ```
 
+Las preferencias de búsqueda (palabras clave, ubicaciones, antigüedad, modalidad, nivel y exclusiones)
+viven en Firestore, no en `config.yaml`, y se editan con `/preferencias`. El buscador lee el plan
+`settings/search_plan` y descarta antes de guardar las ofertas de empresas o con títulos excluidos
+(el informe de cada corrida cuenta cuántas excluyó), de modo que no llegan a `job_postings`.
+
+### Migrar desde el `config.yaml` anterior
+
+Haz esto una sola vez, en este orden:
+
+```bash
+git show 38f1609:config.yaml > /tmp/config-legacy.yaml
+.venv/bin/python -m job_agent seed-search-preferences --from-config /tmp/config-legacy.yaml
+```
+
+1. Lo anterior publica tus preferencias antiguas y su plan en Firestore (con `--force` reemplaza las
+   existentes; sin él no toca unas ya guardadas).
+2. Despliega la nueva versión del servicio.
+3. Ejecuta `.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>` para registrar los
+   nuevos tipos de actualización y el menú con `/preferencias`.
+
+Si `config.yaml` conserva claves antiguas bajo `search:`, se ignoran con una advertencia.
+
 El buscador no envía notificaciones por sí mismo; el webhook inicia la evaluación y el envío cuando recibe una petición.
 
 Si instalaste antes el job de launchd del flujo anterior (`job_agent run`), desinstálalo:
 
 ```bash
-launchctl bootout gui/$(id -u)/<label>.job-search
-rm ~/Library/LaunchAgents/<label>.job-search.plist
+python3 scripts/macos/install_schedule.py --label com.<usuario>.job-search --uninstall
 ```
+
+(`<usuario>` es tu usuario de macOS en minúsculas y sin símbolos; la etiqueta anterior era
+`com.<usuario>.job-search`. Si prefieres hacerlo a mano:
+`launchctl bootout gui/$(id -u)/com.<usuario>.job-search` y borra
+`~/Library/LaunchAgents/com.<usuario>.job-search.plist`.)
 
 ```text
 local_collector/          # búsqueda local, LinkedIn MCP, Firestore y CLI
@@ -197,7 +224,7 @@ el transporte. Se elige en `config.yaml`:
 llm:
   provider: openrouter                 # o anthropic (por defecto, claude-opus-5-5)
   model: anthropic/claude-sonnet-4.5   # id exacto de openrouter.ai/models
-  models:                              # opcional: un modelo por tarea (profile, match, tailor)
+  models:                              # opcional: un modelo por tarea (profile, match, tailor, preferences)
     match: google/gemini-2.5-flash
 ```
 
@@ -209,7 +236,7 @@ dar puntajes y hojas de vida de peor calidad.
 
 ## Arquitectura hexagonal
 
-> Diagramas de componentes y de secuencia en [`docs/arquitectura.md`](docs/arquitectura.md).
+> Diagramas de flujo de datos y de secuencia en [`docs/arquitectura.md`](docs/arquitectura.md).
 
 Cada herramienta que usa el agente (Claude, servidores MCP, git/GitHub, Telegram, sistema de
 archivos) es un **adaptador** detrás de un **puerto**. El núcleo no sabe con qué herramienta habla.

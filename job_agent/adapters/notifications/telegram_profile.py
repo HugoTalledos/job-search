@@ -15,6 +15,7 @@ BOT_COMMANDS = [
     {"command": "build_profile", "description": "Construir mi perfil profesional"},
     {"command": "resend_pending", "description": "Reenviar propuestas pendientes"},
     {"command": "ajustar_cv", "description": "Responde a una oferta para recibir un CV ajustado"},
+    {"command": "preferencias", "description": "Ver o cambiar el tipo de ofertas que busco"},
 ]
 
 
@@ -66,7 +67,7 @@ def register_webhook(token: str, url: str, secret: str, client: httpx.Client | N
     """Point the bot at ``url`` (Telegram will send ``secret`` in every call) and publish its commands."""
     http = client or httpx.Client(timeout=30)
     for method, payload in (
-        ("setWebhook", {"url": url, "secret_token": secret, "allowed_updates": ["message"],
+        ("setWebhook", {"url": url, "secret_token": secret, "allowed_updates": ["message", "callback_query"],
                         "drop_pending_updates": True}),
         ("setMyCommands", {"commands": BOT_COMMANDS}),
     ):

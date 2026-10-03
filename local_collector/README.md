@@ -16,3 +16,8 @@ La CLI directa es `.venv-collector/bin/python -m local_collector [--config ruta.
 servidor MCP de `search.sources.linkedin` en `config.yaml`, las credenciales de `.env` y el plan de
 `settings/search_plan` en Firestore. Escribe ofertas nuevas en `job_postings/{job_key}`. Requiere
 `FIRESTORE_PROJECT_ID` y `GOOGLE_APPLICATION_CREDENTIALS`.
+
+El plan lo escribe el servicio remoto a partir de las preferencias que editas con `/preferencias` en
+Telegram; no se configura en `config.yaml`. El buscador descarta, antes de guardarlas, las ofertas cuya
+empresa o título coincide con las exclusiones del plan (`CollectionReport.excluded` cuenta cuántas) y
+nunca las escribe en `job_postings`.
