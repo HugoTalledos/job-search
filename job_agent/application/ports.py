@@ -184,6 +184,10 @@ class JobPostingReader(Protocol):
 class CvTrackingStore(Protocol):
     def claim(self, key: CvVersionKey, now: datetime) -> ClaimResult: ...
 
+    def begin_delivery(self, key: CvVersionKey) -> None:
+        """Reset receipts for a fully delivered version requested again; preserve partial delivery."""
+        ...
+
     def mark_ready(
         self, key: CvVersionKey, artifacts: CvArtifacts, match: JobMatch, tailored: TailoredResume,
         *, attempt_id: str,
@@ -206,3 +210,13 @@ class CvArtifactStore(Protocol):
     ) -> CvArtifacts: ...
 
     def read_pdf(self, artifacts: CvArtifacts) -> bytes: ...
+
+
+class PdfRenderer(Protocol):
+    def render(self, markdown_text: str) -> bytes: ...
+
+
+class CvDelivery(Protocol):
+    def send_summary(self, chat_id: str, reply_to_message_id: int, summary: str) -> int: ...
+
+    def send_pdf(self, chat_id: str, reply_to_message_id: int, pdf: bytes) -> int: ...

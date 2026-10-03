@@ -319,3 +319,30 @@ def test_stale_upload_after_new_attempt_is_ready_cannot_change_published_bytes(s
     assert artifact_store.read_pdf(ready.artifacts) == b'winner pdf'
     assert all(storage_client.objects[name] == value for name, value in winning_objects.items())
     assert store.claim(key, now + timedelta(hours=1)).action == 'reuse'
+
+
+def test_fresh_resend_resets_receipts_and_failed_pdf_retry_keeps_new_summary(store, key, now, artifacts, match, tailored):
+    claim = store.claim(key, now)
+    store.mark_ready(key, artifacts, match, tailored, attempt_id=claim.attempt_id)
+    store.mark_summary_sent(key, 41)
+    store.mark_pdf_sent(key, 42)
+    store.begin_delivery(key)
+    ready = store.load_ready(key)
+    assert ready.delivery_status == 'PENDING'
+    assert ready.summary_message_id is None and ready.pdf_message_id is None
+    store.mark_summary_sent(key, 51)
+    store.mark_delivery_failed(key)
+    store.begin_delivery(key)  # A partial retry must preserve the new confirmed summary.
+    ready = store.load_ready(key)
+    assert ready.summary_message_id == 51 and ready.pdf_message_id is None
+    assert ready.delivery_status == 'FAILED'
+    store.mark_pdf_sent(key, 52)
+    ready = store.load_ready(key)
+    assert ready.delivery_status == 'SENT'
+    assert ready.summary_message_id == 51 and ready.pdf_message_id == 52
+
+
+def test_begin_delivery_rejects_generation_that_is_not_ready(store, key, now):
+    store.claim(key, now)
+    with pytest.raises(LookupError):
+        store.begin_delivery(key)

@@ -124,6 +124,24 @@ class FirestoreCvTrackingStore:
             delivery_status=data['delivery_status'],
         )
 
+    def begin_delivery(self, key: CvVersionKey) -> None:
+        """A fresh explicit resend must not mistake old receipts for new delivery."""
+        version = self._version(key)
+
+        @firestore.transactional
+        def begin(transaction):
+            data = version.get(transaction=transaction).to_dict() or {}
+            if data.get('generation_status') != 'READY':
+                raise LookupError('CV version is not ready for delivery')
+            if data.get('delivery_status') == 'SENT':
+                transaction.set(version, {
+                    'summary_message_id': None, 'pdf_message_id': None,
+                    'summary_sent_at': None, 'pdf_sent_at': None,
+                    'delivery_status': 'PENDING', 'updated_at': firestore.SERVER_TIMESTAMP,
+                }, merge=True)
+
+        begin(self.client.transaction())
+
     def mark_summary_sent(self, key: CvVersionKey, message_id: int) -> None:
         self._mark_delivery(key, 'summary_message_id', message_id)
 

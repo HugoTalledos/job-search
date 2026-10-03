@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from ..domain.models import JobMatch, JobPosting, Profile, TailoredResume
@@ -48,6 +49,7 @@ class PreparedCvRequest:
     resume_text: str
     profile: Profile
     posting: JobPosting
+    requested_at: datetime
     attempt_id: str | None = None
 
 
