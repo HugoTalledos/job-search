@@ -30,9 +30,14 @@ class Document:
             if transaction:
                 assert not transaction.writes, 'Firestore forbids reads after writes'
                 transaction.reads[self.path] = self.client.revisions.get(self.path, 0)
-        if transaction and self.client.barrier and '/versions/' in self.path and transaction.attempt == 1:
+        if transaction and self.client.barrier and self.client.barrier_on(self.path) and transaction.attempt == 1:
             self.client.barrier.wait(timeout=5)
         return snapshot
+
+    def set(self, data, merge=False):
+        with self.client.lock:
+            self.client.docs[self.path] = {**(self.client.docs.get(self.path, {}) if merge else {}), **deepcopy(data)}
+            self.client.revisions[self.path] = self.client.revisions.get(self.path, 0) + 1
 
 
 class Collection:
@@ -77,6 +82,7 @@ class Client:
     def __init__(self):
         self.docs, self.revisions = {}, {}
         self.lock, self.barrier, self.conflicts = Lock(), None, 0
+        self.barrier_on = lambda path: '/versions/' in path  # which transactional reads wait at the barrier
 
     def collection(self, name):
         return Collection(self, name)

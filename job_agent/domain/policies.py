@@ -1,11 +1,16 @@
-"""Pure business rules: profile freshness and changes (normalisation lives in job_contracts)."""
+"""Pure business rules: profile freshness and changes, search plan compilation.
+
+Normalisation lives in job_contracts.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from job_contracts import CollectorPlan, SearchPlan, SearchPreferences, SearchQuery
 from job_contracts.normalize import normalize_company, normalize_keyword as _norm, normalize_title  # noqa: F401
 
 from .models import Profile, StoredProfile
@@ -101,3 +106,71 @@ def profile_changes(previous: Profile | None, current: Profile) -> list[str]:
         if added := _added(before, after):
             changes.append(f"{label}: " + ", ".join(added))
     return changes
+
+
+# --- Search plan compilation -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SearchBudgets:
+    max_roles_from_profile: int = 3
+    max_queries: int = 8
+    max_details_per_run: int = 20
+
+
+@dataclass(frozen=True)
+class SearchPlanBuild:
+    plan: CollectorPlan | None  # None when there is no keyword at all
+    total_queries: int  # before the max_queries cut
+
+
+def profile_fingerprint(profile: Profile | None) -> str:
+    """SHA-256 of the profile a plan was compiled from; empty when there was none."""
+    if profile is None:
+        return ""
+    return hashlib.sha256(json.dumps(profile.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+
+
+def _search_keywords(preferences: SearchPreferences, profile: Profile | None, budgets: SearchBudgets) -> list[str]:
+    candidates = list(preferences.keywords_include)
+    if preferences.use_profile_keywords and profile is not None:
+        candidates += profile.target_roles[: budgets.max_roles_from_profile] + profile.search_keywords
+    excluded = {_norm(word) for word in preferences.keywords_exclude}
+    seen: set[str] = set()
+    keywords = []
+    for candidate in candidates:
+        key = _norm(candidate)
+        if key and key not in excluded and key not in seen:
+            seen.add(key)
+            keywords.append(candidate.strip())
+    return keywords
+
+
+def build_search_plan(
+    preferences: SearchPreferences, profile: Profile | None, budgets: SearchBudgets, now: datetime
+) -> SearchPlanBuild:
+    """Compile the collector plan from the stored preferences and the profile, without any LLM."""
+    keywords = _search_keywords(preferences, profile, budgets)
+    if not keywords:
+        return SearchPlanBuild(plan=None, total_queries=0)
+    locations: list[str | None] = list(preferences.locations)
+    if not locations and profile is not None:
+        locations = [place.strip() for place in profile.locations if place.strip()]
+    if not locations:
+        locations = [None]
+    queries = [SearchQuery(keywords=keyword, location=place) for keyword in keywords for place in locations]
+    plan = CollectorPlan(
+        search=SearchPlan(
+            queries=queries[: budgets.max_queries],
+            posted_within_days=preferences.posted_within_days,
+            work_types=list(preferences.work_types),
+            experience_levels=list(preferences.experience_levels),
+        ),
+        max_details_per_run=budgets.max_details_per_run,
+        exclude_companies=list(preferences.exclude_companies),
+        exclude_title_keywords=list(preferences.exclude_title_keywords),
+        preferences_version=preferences.version,
+        profile_fingerprint=profile_fingerprint(profile),
+        built_at=now,
+    )
+    return SearchPlanBuild(plan=plan, total_queries=len(queries))

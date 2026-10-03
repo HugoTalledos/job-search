@@ -7,10 +7,14 @@ only through one of these protocols. Adapters in ``job_agent.adapters`` implemen
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
+
+from job_contracts import CollectorPlan, SearchPreferences
 
 from .cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
+from .preference_models import DraftResolution, PreferenceDraft
 
 from ..domain.models import JobMatch, JobPosting, Profile, RepoEvidence, RepoRef, StoredProfile, TailoredResume
 
@@ -136,3 +140,30 @@ class CvDelivery(Protocol):
     def send_summary(self, chat_id: str, reply_to_message_id: int, summary: str) -> int: ...
 
     def send_pdf(self, chat_id: str, reply_to_message_id: int, pdf: bytes) -> int: ...
+
+
+# --- Search preferences -----------------------------------------------------------------------
+
+
+class SearchSettingsStore(Protocol):
+    """Search preferences (source of truth), the derived collector plan and pending change drafts."""
+
+    def load_preferences(self) -> SearchPreferences | None: ...
+
+    def load_plan(self) -> CollectorPlan | None: ...
+
+    def seed(
+        self, preferences: SearchPreferences, compile: Callable[[SearchPreferences], CollectorPlan | None],
+        *, force: bool, now: datetime,
+    ) -> bool:
+        """Store initial preferences (and their plan); False, writing nothing, if some exist and not ``force``."""
+        ...
+
+    def save_plan(self, plan: CollectorPlan) -> None: ...
+
+    def create_draft(self, draft: PreferenceDraft) -> None: ...
+
+    def resolve_draft(
+        self, draft_id: str, chat_id: str, action: Literal["apply", "cancel"], now: datetime,
+        compile: Callable[[SearchPreferences], CollectorPlan | None],
+    ) -> DraftResolution: ...
