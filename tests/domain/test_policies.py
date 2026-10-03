@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from job_agent.domain.models import StoredProfile
+from job_agent.domain.models import Skill, StoredProfile
 from job_agent.domain.policies import (
     MatchingPolicy,
     SearchPreferences,
     job_key,
+    profile_changes,
 )
 
 
@@ -94,3 +95,34 @@ def test_reuse_policy_only_offers_versions_of_current_base(profile):
     versions = [v(1, current, 1), v(2, "old", 2), v(3, current, 3), v(4, current, 2)]
     assert [x.id for x in ReusePolicy(max_candidates=2).candidates(versions, current)] == ["v3", "v4"]
     assert ReusePolicy(enabled=False).candidates(versions, current) == []
+
+
+def test_profile_changes_are_empty_for_a_first_profile(profile):
+    assert profile_changes(None, profile) == []
+    assert profile_changes(profile, profile) == []
+
+
+def test_profile_changes_list_what_the_rebuilt_profile_brings(profile):
+    from job_agent.domain.models import Skill
+    rebuilt = profile.model_copy(update={
+        "seniority": "senior",
+        "years_of_experience": 5,
+        "skills": [Skill(name="python", level="expert", evidence="repo"), Skill(name="Go", level="basic", evidence="r")],
+        "target_roles": ["backend engineer", "Platform Engineer"],
+        "strengths_missing_from_resume": ["AWS Lambda", "Terraform"],
+    })
+
+    assert profile_changes(profile, rebuilt) == [
+        "Seniority: mid → senior",
+        "Años de experiencia: 4 → 5",
+        "Habilidades nuevas: Go (básico)",
+        "Cambio de nivel: python (avanzado → experto)",
+        "Cargos objetivo nuevos: Platform Engineer",
+        "Fortalezas nuevas que tu CV no muestra: Terraform",
+    ]
+
+
+def test_profile_changes_mention_removed_skills(profile):
+    assert profile_changes(profile, profile.model_copy(update={"skills": []})) == [
+        "Habilidades que ya no aparecen: Python"
+    ]

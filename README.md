@@ -8,7 +8,7 @@ confirma que la evaluación haya terminado. Una API key ausente o incorrecta rec
 trabajo.
 
 Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY`,
-`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en el entorno (o en `.env` para
+`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` y `TELEGRAM_WEBHOOK_SECRET` en el entorno (o en `.env` para
 una ejecución local). Instala las dependencias
 de `requirements.txt` y arranca el servicio desde la raíz del repositorio:
 
@@ -30,7 +30,7 @@ Antes de notificar, guarda el perfil profesional en el documento Firestore `prof
 los campos de `Profile` (`full_name`, `headline`, `seniority`, `years_of_experience`, `summary`,
 `target_roles`, `search_keywords`, `skills`, `domains`, `languages`, `locations`,
 `notable_projects` y `strengths_missing_from_resume`). Cada elemento de `skills` tiene `name`,
-`level` y `evidence`. El servicio solo lee ese documento; no genera ni actualiza el perfil.
+`level` y `evidence`. Puedes crearlo (o rehacerlo) desde Telegram con `/build-profile`; ver abajo.
 
 Por cada documento `job_postings/{id}` con `status: "PENDING"`, el servicio primero enriquece la
 oferta a partir de su `description`. Guarda `required_language`, `salary_range` (vacíos si no hay
@@ -49,6 +49,32 @@ notificación normal al webhook. Un fallo de Telegram deja `PENDING_NOTIFICATION
 reintenta esos envíos, que quedan para otro mecanismo. Conserva `job` y los metadatos del buscador.
 Las ejecuciones se serializan dentro de cada instancia del servicio; no hay coordinación entre
 instancias ni cola persistente. El `200` del webhook no confirma la entrega del mensaje.
+
+## Control desde Telegram
+
+El mismo servicio expone `POST /webhooks/telegram`, al que Telegram envía los mensajes que le escribes
+a tu bot. Solo acepta llamadas con el encabezado `X-Telegram-Bot-Api-Secret-Token` igual a
+`TELEGRAM_WEBHOOK_SECRET` (1 a 256 caracteres `A-Z`, `a-z`, `0-9`, `_` o `-`; otro valor responde
+`401`) y solo atiende mensajes del chat `TELEGRAM_CHAT_ID`; el resto se ignora con `200` para que
+Telegram no los reenvíe.
+
+Para conectar el bot, publica el servicio en una URL HTTPS (Telegram no llama a HTTP) y ejecuta una vez:
+
+```bash
+.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>
+```
+
+Esto registra `https://<tu-servicio>/webhooks/telegram` con el secreto y publica el menú de comandos
+del bot. Comandos disponibles:
+
+| Comando | Qué hace |
+|---|---|
+| `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
+
+Cualquier otro mensaje recibe la lista de comandos. Si escribes `/build-profile` mientras ya se está
+construyendo un perfil, el bot te lo indica y no inicia otro. Igual que la evaluación, las
+construcciones se serializan dentro de cada instancia del servicio, sin cola persistente. El servicio
+necesita `git` instalado para leer los repositorios.
 
 ## Buscador local con Firestore
 

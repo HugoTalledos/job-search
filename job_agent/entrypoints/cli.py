@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
+from ..adapters.notifications.telegram_profile import register_webhook
 from ..adapters.persistence.json_store import JsonProfileStore
 from ..bootstrap import build_collector, build_container, build_notifier, build_search_preferences
 from ..config import load_config, load_dotenv
@@ -25,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test-notify", help="Send a test notification")
     sub.add_parser("collect", help="Collect new LinkedIn postings into Firestore")
     sub.add_parser("seed-search-plan", help="Publish current search plan to Firestore")
+    hook_p = sub.add_parser("set-telegram-webhook", help="Point the Telegram bot at the agent's webhook")
+    hook_p.add_argument("url", help="Public HTTPS base URL of the service, e.g. https://agent.example.com")
     args = parser.parse_args(argv)
     load_dotenv()  # local runs keep their secrets in .env; in GitHub Actions they come from the environment
 
@@ -40,6 +44,18 @@ def main(argv: list[str] | None = None) -> int:
             print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set", file=sys.stderr)
             return 1
         send_text("✅ job-search agent: notificaciones configuradas correctamente.")
+        return 0
+
+    if args.command == "set-telegram-webhook":
+        token, secret = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+        if not token.strip() or not secret.strip():
+            print("TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET not set", file=sys.stderr)
+            return 2
+        if not args.url.startswith("https://"):
+            print("Telegram only calls HTTPS webhooks", file=sys.stderr)
+            return 2
+        register_webhook(token, args.url.rstrip("/") + "/webhooks/telegram", secret)
+        print("Webhook de Telegram configurado")
         return 0
 
     if args.command in {"collect", "seed-search-plan"}:

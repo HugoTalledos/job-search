@@ -1,4 +1,4 @@
-"""ASGI composition for professional-profile affinity scoring."""
+"""ASGI composition: affinity scoring webhook and the Telegram bot that controls the agent."""
 
 from __future__ import annotations
 
@@ -8,8 +8,17 @@ import logging
 from fastapi import FastAPI
 from google.cloud import firestore
 
-from .config import load_config, load_dotenv
+from .adapters.code_repositories import GitRepositoryReader
+from .adapters.llm import LlmProfileInferer
+from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
+from .adapters.persistence import FirestoreProfileStore
+from .adapters.resume import FileResumeSource
+from .application import BuildProfessionalProfile, EnsureProfile
+from .bootstrap import build_llm
+from .config import Config, load_config, load_dotenv
+from .domain.models import RepoRef
 from .entrypoints.http import create_app
+from .entrypoints.telegram import add_telegram_webhook
 from .scoring.enrichment import JevOfferEnricher
 from .scoring.firestore import FirestoreScoringStore
 from .scoring.jev import JevScoringTool
@@ -34,8 +43,12 @@ def build_webhook_app() -> FastAPI:
     telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     if not telegram_chat_id.strip():
         raise ValueError("TELEGRAM_CHAT_ID no está configurado")
+    telegram_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    if not telegram_secret.strip():
+        raise ValueError("TELEGRAM_WEBHOOK_SECRET no está configurado")
 
-    threshold = load_config().matching.min_score_to_notify
+    cfg = load_config()
+    threshold = cfg.matching.min_score_to_notify
     logging.getLogger("httpx").setLevel(logging.WARNING)
     client = firestore.Client(project=project)
     store = FirestoreScoringStore(client)
@@ -47,7 +60,35 @@ def build_webhook_app() -> FastAPI:
         TelegramOfferNotifier(telegram_token, telegram_chat_id),
         threshold,
     )
-    return create_app(runner, api_key)
+    app = create_app(runner, api_key)
+    telegram = TelegramNotifier(telegram_token, telegram_chat_id)
+    add_telegram_webhook(
+        app,
+        secret=telegram_secret,
+        chat_id=telegram_chat_id.strip(),
+        messenger=telegram,
+        build_profile=build_profile_use_case(cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram)),
+    )
+    return app
+
+
+def build_profile_use_case(
+    cfg: Config, store: FirestoreProfileStore, reporter: TelegramProfileReporter
+) -> BuildProfessionalProfile:
+    ensure_profile = EnsureProfile(
+        resume=FileResumeSource(cfg.resume_file),
+        repositories=GitRepositoryReader(
+            repositories=[RepoRef(url=r.url, branch=r.branch) for r in cfg.repositories],
+            github_user=cfg.github_user,
+            include_forks=cfg.include_forks,
+            max_repos=cfg.max_repos,
+        ),
+        inferer=LlmProfileInferer(build_llm(cfg.llm, "profile")),
+        store=store,
+        refresh_days=cfg.profile_refresh_days,
+        preferred_locations=cfg.search.locations,
+    )
+    return BuildProfessionalProfile(ensure_profile, store, reporter)
 
 
 app = build_webhook_app()

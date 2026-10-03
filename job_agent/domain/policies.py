@@ -1,5 +1,5 @@
 """Pure business rules: posting identity, de-duplication, deterministic filters, search plan,
-notify/tailor thresholds, profile freshness and resume reuse."""
+notify/tailor thresholds, profile freshness and changes, and resume reuse."""
 
 from __future__ import annotations
 
@@ -248,3 +248,52 @@ class ReusePolicy:
             return []
         current = [v for v in versions if v.base_fingerprint == base_fingerprint]
         return sorted(current, key=lambda v: v.created_at, reverse=True)[: self.max_candidates]
+
+
+_LEVELS = {"basic": "básico", "intermediate": "intermedio", "advanced": "avanzado", "expert": "experto"}
+
+
+def _added(before: list[str], after: list[str]) -> list[str]:
+    known = {_norm(item) for item in before}
+    return [item for item in after if _norm(item) not in known]
+
+
+def profile_changes(previous: Profile | None, current: Profile) -> list[str]:
+    """What a rebuilt profile brings compared with the previous one, one line per change (Spanish)."""
+    if previous is None:
+        return []
+    changes: list[str] = []
+    if previous.headline != current.headline:
+        changes.append(f"Nuevo titular: {current.headline}")
+    if previous.seniority != current.seniority:
+        changes.append(f"Seniority: {previous.seniority} → {current.seniority}")
+    if previous.years_of_experience != current.years_of_experience:
+        changes.append(f"Años de experiencia: {previous.years_of_experience:g} → {current.years_of_experience:g}")
+
+    old_skills = {_norm(s.name): s for s in previous.skills}
+    new_skills = [s for s in current.skills if _norm(s.name) not in old_skills]
+    if new_skills:
+        changes.append("Habilidades nuevas: " + ", ".join(f"{s.name} ({_LEVELS[s.level]})" for s in new_skills))
+    levels = [
+        f"{s.name} ({_LEVELS[old.level]} → {_LEVELS[s.level]})"
+        for s in current.skills
+        if (old := old_skills.get(_norm(s.name))) and old.level != s.level
+    ]
+    if levels:
+        changes.append("Cambio de nivel: " + ", ".join(levels))
+    current_skills = {_norm(s.name) for s in current.skills}
+    if removed := [s.name for s in previous.skills if _norm(s.name) not in current_skills]:
+        changes.append("Habilidades que ya no aparecen: " + ", ".join(removed))
+
+    for label, before, after in (
+        ("Cargos objetivo nuevos", previous.target_roles, current.target_roles),
+        ("Dominios nuevos", previous.domains, current.domains),
+        ("Idiomas nuevos", previous.languages, current.languages),
+        ("Proyectos destacados nuevos", previous.notable_projects, current.notable_projects),
+        ("Fortalezas nuevas que tu CV no muestra", previous.strengths_missing_from_resume,
+         current.strengths_missing_from_resume),
+        ("Palabras clave de búsqueda nuevas", previous.search_keywords, current.search_keywords),
+    ):
+        if added := _added(before, after):
+            changes.append(f"{label}: " + ", ".join(added))
+    return changes
