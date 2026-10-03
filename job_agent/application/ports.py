@@ -137,6 +137,14 @@ class Notifier(Protocol):
     def notify(self, alert: JobAlert) -> None: ...
 
 
+class ProfileReporter(Protocol):
+    """Tells the candidate how a profile build requested from chat ended."""
+
+    def built(self, profile: Profile, changes: list[str], first_build: bool) -> None: ...
+
+    def failed(self) -> None: ...
+
+
 class SeenJobsRepository(Protocol):
     """Postings already processed (scored or discarded by a filter)."""
 
