@@ -6,9 +6,30 @@ import argparse
 import logging
 import os
 import sys
+from pathlib import Path
 
 from ..adapters.notifications.telegram_profile import register_webhook
-from ..config import load_dotenv
+from google.auth.exceptions import DefaultCredentialsError
+from google.cloud import firestore
+from pydantic import ValidationError
+
+from ..adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore
+from ..application import ManageSearchPreferences
+from ..config import ROOT, legacy_search_preferences, load_config, load_dotenv
+from ..domain.policies import SearchBudgets
+
+
+def build_search_preferences_manager(budgets: SearchBudgets) -> ManageSearchPreferences:
+    project = os.environ.get("FIRESTORE_PROJECT_ID", "").strip()
+    if not project:
+        raise ValueError("FIRESTORE_PROJECT_ID no está configurado")
+    try:
+        client = firestore.Client(project=project)
+    except DefaultCredentialsError as exc:
+        raise ValueError("No se encontraron credenciales de Firestore (GOOGLE_APPLICATION_CREDENTIALS)") from exc
+    return ManageSearchPreferences(
+        store=FirestoreSearchSettingsStore(client), profiles=FirestoreProfileStore(client), budgets=budgets
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     hook_p = sub.add_parser("set-telegram-webhook", help="Point the Telegram bot at the agent's webhook")
     hook_p.add_argument("url", help="Public HTTPS base URL of the service, e.g. https://agent.example.com")
+    seed_p = sub.add_parser("seed-search-preferences", help="Publish the initial search preferences to Firestore")
+    seed_p.add_argument("--from-config", help="YAML file with the legacy search keys (default: the active config)")
+    seed_p.add_argument("--force", action="store_true", help="Replace preferences that already exist")
     args = parser.parse_args(argv)
     load_dotenv()  # local runs keep their secrets in .env; in GitHub Actions they come from the environment
 
@@ -36,5 +60,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         register_webhook(token, args.url.rstrip("/") + "/webhooks/telegram", secret)
         print("Webhook de Telegram configurado")
+        return 0
+    if args.command == "seed-search-preferences":
+        try:
+            source = args.from_config or args.config or os.environ.get("JOB_AGENT_CONFIG") or ROOT / "config.yaml"
+            preferences = legacy_search_preferences(Path(source))
+            budgets = load_config(args.config).search_budgets()
+            created = build_search_preferences_manager(budgets).seed(preferences, force=args.force)
+        except (ValueError, ValidationError) as exc:
+            print(f"Error de configuración: {exc}", file=sys.stderr)
+            return 2
+        print(
+            "Preferencias publicadas en Firestore"
+            if created
+            else "Ya existen preferencias; usa --force para reemplazarlas"
+        )
         return 0
     return 0

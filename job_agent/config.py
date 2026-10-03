@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -9,6 +10,12 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+from job_contracts import SearchPreferences
+
+from .domain.policies import SearchBudgets
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,19 +40,10 @@ class SourcesConfig(BaseModel):
 
 
 class SearchConfig(BaseModel):
-    # Search plan (deterministic): keywords x locations
-    locations: list[str] = Field(default_factory=lambda: ["Remote"])
-    extra_keywords: list[str] = Field(default_factory=list)
+    """Budgets and sources only; the candidate's search preferences live in Firestore."""
+
     max_roles_from_profile: int = 3
     max_queries: int = 8
-    # Filters applied by the job board itself
-    posted_within_days: int = 1
-    work_types: list[str] = Field(default_factory=list)
-    experience_levels: list[str] = Field(default_factory=list)
-    # Filters applied by the agent before any LLM call
-    exclude_companies: list[str] = Field(default_factory=list)
-    exclude_title_keywords: list[str] = Field(default_factory=list)
-    # Budgets
     max_details_per_run: int = 20
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
 
@@ -83,6 +81,13 @@ class Config(BaseModel):
     profile_refresh_days: int = 30
     language: str = "es"
 
+    def search_budgets(self) -> SearchBudgets:
+        return SearchBudgets(
+            max_roles_from_profile=self.search.max_roles_from_profile,
+            max_queries=self.search.max_queries,
+            max_details_per_run=self.search.max_details_per_run,
+        )
+
     @property
     def resume_file(self) -> Path:
         return ROOT / self.resume_path
@@ -118,10 +123,44 @@ def load_dotenv(path: str | os.PathLike | None = None) -> None:
             os.environ.setdefault(key, value)
 
 
+LEGACY_SEARCH_KEYS = (
+    "locations", "extra_keywords", "posted_within_days", "work_types", "experience_levels",
+    "exclude_companies", "exclude_title_keywords",
+)
+
+
+def _config_path(path: str | os.PathLike | None) -> Path:
+    return Path(path or os.environ.get("JOB_AGENT_CONFIG", ROOT / "config.yaml"))
+
+
+def _read_yaml(path: Path) -> dict:
+    return (yaml.safe_load(path.read_text()) if path.exists() else None) or {}
+
+
 def load_config(path: str | os.PathLike | None = None) -> Config:
-    path = Path(path or os.environ.get("JOB_AGENT_CONFIG", ROOT / "config.yaml"))
-    raw = yaml.safe_load(path.read_text()) if path.exists() else {}
-    return Config.model_validate(_expand_env(raw or {}))
+    path = _config_path(path)
+    raw = _read_yaml(path)
+    search = raw.get("search")
+    legacy = [key for key in LEGACY_SEARCH_KEYS if isinstance(search, dict) and key in search]
+    if legacy:  # names only: the values may be private
+        log.warning(
+            "Ignoring search keys in %s now stored in Firestore: %s. "
+            "Run `python -m job_agent seed-search-preferences --from-config %s` once and remove them.",
+            path, ", ".join(legacy), path,
+        )
+    return Config.model_validate(_expand_env(raw))
+
+
+def legacy_search_preferences(path: Path) -> SearchPreferences:
+    """Build preferences from the legacy ``search`` keys of a YAML file (one-time migration)."""
+    search = _read_yaml(Path(path)).get("search")
+    search = search if isinstance(search, dict) else {}
+    if not any(key in search for key in LEGACY_SEARCH_KEYS):
+        raise ValueError(f"{path} no contiene claves de búsqueda para migrar ({', '.join(LEGACY_SEARCH_KEYS)})")
+    data = {key: search[key] for key in LEGACY_SEARCH_KEYS if key in search and key != "extra_keywords"}
+    if "extra_keywords" in search:
+        data["keywords_include"] = search["extra_keywords"]
+    return SearchPreferences.model_validate(data)
 
 
 def require_firebase_storage_bucket() -> str:

@@ -21,7 +21,7 @@ def test_env_expansion_and_defaults(tmp_path, monkeypatch):
 
 def test_repo_config_parses():
     cfg = load_config()
-    assert cfg.search.sources.linkedin.enabled and cfg.search.posted_within_days == 2
+    assert cfg.search.sources.linkedin.enabled
 
 
 def test_load_dotenv(tmp_path, monkeypatch):
@@ -56,3 +56,38 @@ def test_firebase_bucket_must_be_configured_as_bare_bucket_name(monkeypatch, val
         monkeypatch.setenv('FIREBASE_STORAGE_BUCKET', value)
     with pytest.raises(ValueError, match='FIREBASE_STORAGE_BUCKET'):
         require_firebase_storage_bucket()
+
+
+def test_legacy_search_keys_warn_and_are_ignored(tmp_path, caplog):
+    path = tmp_path / "config.yaml"
+    path.write_text("search:\n  locations: [Remote]\n  exclude_companies: [Secreta]\n  max_queries: 4\n")
+    cfg = load_config(path)
+    assert cfg.search.max_queries == 4 and not hasattr(cfg.search, "locations")
+    assert "seed-search-preferences" in caplog.text and "Secreta" not in caplog.text
+    assert "locations" in caplog.text and "exclude_companies" in caplog.text
+    assert cfg.search_budgets().max_queries == 4
+
+
+def test_no_warning_without_legacy_keys(tmp_path, caplog):
+    path = tmp_path / "config.yaml"
+    path.write_text("search:\n  max_queries: 4\n")
+    load_config(path)
+    assert "seed-search-preferences" not in caplog.text
+
+
+def test_legacy_preferences_read_from_old_yaml(tmp_path):
+    from job_agent.config import legacy_search_preferences
+
+    path = tmp_path / "old.yaml"
+    path.write_text("search:\n  extra_keywords: [Django]\n  locations: [Remote]\n  posted_within_days: 2\n")
+    prefs = legacy_search_preferences(path)
+    assert prefs.keywords_include == ["Django"] and prefs.locations == ["Remote"]
+
+
+def test_legacy_preferences_require_some_legacy_key(tmp_path):
+    from job_agent.config import legacy_search_preferences
+
+    path = tmp_path / "new.yaml"
+    path.write_text("search:\n  max_queries: 4\n")
+    with pytest.raises(ValueError):
+        legacy_search_preferences(path)

@@ -36,3 +36,50 @@ def test_legacy_commands_are_gone(command, capsys):
 def test_bootstrap_only_builds_llms():
     import job_agent.bootstrap as bootstrap
     assert not hasattr(bootstrap, "build_container") and hasattr(bootstrap, "build_llm")
+
+
+def _cli_with_fake_seed(monkeypatch, result=True):
+    import job_agent.entrypoints.cli as cli
+
+    calls = {}
+
+    class Fake:
+        def seed(self, preferences, *, force):
+            calls["seed"] = (preferences, force)
+            return result
+
+    def factory(budgets):
+        calls["budgets"] = budgets
+        return Fake()
+
+    monkeypatch.setattr(cli, "build_search_preferences_manager", factory)
+    return cli, calls
+
+
+def test_cli_seed_reads_from_config_path(monkeypatch, tmp_path, capsys):
+    cli, calls = _cli_with_fake_seed(monkeypatch)
+    path = tmp_path / "old.yaml"
+    path.write_text("search:\n  extra_keywords: [Django]\n  locations: [Remote]\n")
+    active = tmp_path / "config.yaml"
+    active.write_text("search:\n  max_queries: 5\n")
+    assert cli.main(["--config", str(active), "seed-search-preferences", "--from-config", str(path), "--force"]) == 0
+    prefs, force = calls["seed"]
+    assert prefs.keywords_include == ["Django"] and force is True
+    assert calls["budgets"].max_queries == 5
+    assert "Preferencias publicadas en Firestore" in capsys.readouterr().out
+
+
+def test_cli_seed_reports_existing_preferences(monkeypatch, tmp_path, capsys):
+    cli, _ = _cli_with_fake_seed(monkeypatch, result=False)
+    path = tmp_path / "old.yaml"
+    path.write_text("search:\n  locations: [Remote]\n")
+    assert cli.main(["seed-search-preferences", "--from-config", str(path)]) == 0
+    assert "Ya existen preferencias; usa --force para reemplazarlas" in capsys.readouterr().out
+
+
+def test_cli_seed_without_legacy_keys_is_a_config_error(monkeypatch, tmp_path, capsys):
+    cli, calls = _cli_with_fake_seed(monkeypatch)
+    path = tmp_path / "new.yaml"
+    path.write_text("search:\n  max_queries: 4\n")
+    assert cli.main(["seed-search-preferences", "--from-config", str(path)]) == 2
+    assert "Error de configuración" in capsys.readouterr().err and "seed" not in calls

@@ -80,3 +80,21 @@ def test_profile_from_older_version_is_rebuilt_once(profile):
     uc.execute()
     uc.execute()
     assert inferer.calls == 2
+
+
+def test_profile_inference_reads_current_locations(profile):
+    seen = []
+
+    class Inferer(FakeInferer):
+        def infer(self, resume_text, evidence, preferred_locations):
+            seen.append(preferred_locations)
+            return super().infer(resume_text, evidence, preferred_locations)
+
+    locations = ["Remote"]
+    uc = EnsureProfile(
+        FakeResume("cv"), FakeRepositories({"https://g/a": "h1"}), Inferer(profile), MemoryProfileStore(),
+        preferred_locations=lambda: list(locations), clock=lambda: START,
+    )
+    locations[:] = ["España"]  # changed after construction
+    uc.execute()
+    assert seen == [["España"]]

@@ -9,11 +9,13 @@ from threading import Lock
 from fastapi import FastAPI
 from google.cloud import firestore
 
+from job_contracts import SearchPreferences
+
 from .adapters.code_repositories import GitRepositoryReader
 from .adapters.llm import LlmJobMatcher, LlmProfileInferer, LlmResumeTailor
 from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
 from .adapters.notifications.telegram_cv import TelegramCvDelivery
-from .adapters.persistence import FirestoreProfileStore
+from .adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore
 from .adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
 from .adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
 from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessageIndex
@@ -78,7 +80,9 @@ def build_webhook_app() -> FastAPI:
         secret=telegram_secret,
         chat_id=telegram_chat_id.strip(),
         messenger=telegram,
-        build_profile=build_profile_use_case(cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram)),
+        build_profile=build_profile_use_case(
+            cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram), FirestoreSearchSettingsStore(client)
+        ),
         resend_pending=ResendPendingNotifications(store, offer_notifier, offer_messages),
         cv_generator=cv_generator_use_case(cfg, client, store, storage_bucket, telegram_token),
         offer_messages=offer_messages,
@@ -113,7 +117,10 @@ def cv_generator_use_case(
 
 
 def build_profile_use_case(
-    cfg: Config, store: FirestoreProfileStore, reporter: TelegramProfileReporter
+    cfg: Config,
+    store: FirestoreProfileStore,
+    reporter: TelegramProfileReporter,
+    settings: FirestoreSearchSettingsStore,
 ) -> BuildProfessionalProfile:
     ensure_profile = EnsureProfile(
         resume=FileResumeSource(cfg.resume_file),
@@ -126,7 +133,7 @@ def build_profile_use_case(
         inferer=LlmProfileInferer(build_llm(cfg.llm, "profile")),
         store=store,
         refresh_days=cfg.profile_refresh_days,
-        preferred_locations=cfg.search.locations,
+        preferred_locations=lambda: (settings.load_preferences() or SearchPreferences()).locations,
     )
     return BuildProfessionalProfile(ensure_profile, store, reporter)
 

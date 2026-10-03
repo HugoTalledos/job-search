@@ -22,7 +22,7 @@ class EnsureProfile:
         store: ProfileStore,
         *,
         refresh_days: int = 30,
-        preferred_locations: list[str] | None = None,
+        preferred_locations: Callable[[], list[str]] = lambda: [],
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.resume = resume
@@ -30,7 +30,7 @@ class EnsureProfile:
         self.inferer = inferer
         self.store = store
         self.policy = ProfileRefreshPolicy(refresh_days)
-        self.preferred_locations = preferred_locations or []
+        self.preferred_locations = preferred_locations
         self.clock = clock
 
     def execute(self, force: bool = False) -> Profile:
@@ -55,7 +55,7 @@ class EnsureProfile:
 
         log.info("Inferring profile (%s) from resume + %d repositories", reason, len(repos))
         evidence = [e for r in repos if (e := self.repositories.collect_evidence(r))]
-        profile = self.inferer.infer(resume_text, evidence, self.preferred_locations)
+        profile = self.inferer.infer(resume_text, evidence, list(self.preferred_locations()))
         self.store.save(
             StoredProfile(
                 profile=profile,
