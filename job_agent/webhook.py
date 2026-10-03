@@ -12,9 +12,10 @@ from google.cloud import firestore
 from job_contracts import SearchPreferences
 
 from .adapters.code_repositories import GitRepositoryReader
-from .adapters.llm import LlmJobMatcher, LlmProfileInferer, LlmResumeTailor
+from .adapters.llm import LlmJobMatcher, LlmPreferenceInterpreter, LlmProfileInferer, LlmResumeTailor
 from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
 from .adapters.notifications.telegram_cv import TelegramCvDelivery
+from .adapters.notifications.telegram_preferences import TelegramPreferencesChat
 from .adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore
 from .adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
 from .adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
@@ -22,6 +23,7 @@ from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessage
 from .adapters.resume import FileResumeSource
 from .adapters.resume.pdf_renderer import RequiredPdfRenderer
 from .application import BuildProfessionalProfile, EnsureProfile, GenerateTailoredCv
+from .application.manage_search_preferences import ManageSearchPreferences
 from .bootstrap import build_llm
 from .config import Config, load_config, load_dotenv, require_firebase_storage_bucket
 from .domain.models import RepoRef
@@ -75,17 +77,24 @@ def build_webhook_app() -> FastAPI:
     )
     app = create_app(runner, api_key, execution_lock=execution_lock)
     telegram = TelegramNotifier(telegram_token, telegram_chat_id)
+    profiles = FirestoreProfileStore(client)
+    settings = FirestoreSearchSettingsStore(client)
     add_telegram_webhook(
         app,
         secret=telegram_secret,
         chat_id=telegram_chat_id.strip(),
         messenger=telegram,
-        build_profile=build_profile_use_case(
-            cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram), FirestoreSearchSettingsStore(client)
-        ),
+        build_profile=build_profile_use_case(cfg, profiles, TelegramProfileReporter(telegram), settings),
         resend_pending=ResendPendingNotifications(store, offer_notifier, offer_messages),
         cv_generator=cv_generator_use_case(cfg, client, store, storage_bucket, telegram_token),
         offer_messages=offer_messages,
+        preferences=ManageSearchPreferences(
+            store=settings,
+            profiles=profiles,
+            budgets=cfg.search_budgets(),
+            interpreter=LlmPreferenceInterpreter(build_llm(cfg.llm, "preferences")),
+        ),
+        preferences_chat=TelegramPreferencesChat(telegram_token, telegram_chat_id.strip()),
         execution_lock=execution_lock,
         bot_id=_bot_id(telegram_token),
     )

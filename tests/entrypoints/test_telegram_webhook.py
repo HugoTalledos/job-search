@@ -50,7 +50,24 @@ class NoCv:
         raise AssertionError("unexpected offer lookup")
 
 
-CV_PORTS = {"cv_generator": NoCv(), "offer_messages": NoCv()}
+class NoPreferences:
+    """Preference ports for tests of the other commands: only the post-build plan rebuild is expected."""
+
+    def __init__(self):
+        self.rebuilds = 0
+
+    def rebuild_plan(self):
+        from job_agent.application.preference_models import RebuildResult
+
+        self.rebuilds += 1
+        return RebuildResult(status="no_preferences")
+
+    def __getattr__(self, name):
+        raise AssertionError(f"unexpected preferences call: {name}")
+
+
+CV_PORTS = {"cv_generator": NoCv(), "offer_messages": NoCv(),
+            "preferences": NoPreferences(), "preferences_chat": NoPreferences()}
 
 
 def _client(builder=None, messenger=None):
@@ -297,7 +314,8 @@ def cv(job, profile, match, tailored):
     app = FastAPI()
     add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=RecordingMessenger(),
                          build_profile=Builder(), resend_pending=Builder(), cv_generator=use_case,
-                         offer_messages=offers, bot_id=BOT_ID)
+                         offer_messages=offers, bot_id=BOT_ID,
+                         preferences=NoPreferences(), preferences_chat=NoPreferences())
     return SimpleNamespace(http=TestClient(app), events=events, sent=sent, state=state, offers=offers,
                            use_case=use_case)
 
@@ -459,3 +477,250 @@ def test_background_failure_is_reported_without_details(cv, caplog, failing):
 
 def test_help_lists_the_cv_command():
     assert "/ajustar_cv" in HELP
+
+
+# --- /preferencias and its inline buttons ---
+
+from datetime import datetime, timezone  # noqa: E402
+
+from job_contracts import SearchPreferences  # noqa: E402
+
+from job_agent.application.manage_search_preferences import ManageSearchPreferences  # noqa: E402
+from job_agent.domain.policies import SearchBudgets  # noqa: E402
+from job_agent.domain.preference_edits import PreferenceEdit, PreferenceOperation  # noqa: E402
+from job_agent.entrypoints.telegram import (  # noqa: E402
+    PREFERENCES_FAILED, PREFERENCES_REVIEWING,
+)
+from tests.fakes import MemoryProfileStore, MemorySearchSettings  # noqa: E402
+
+DRAFT_ID = f"{1:032x}"
+
+
+class Interpreter:
+    def __init__(self, events):
+        self.events, self.calls, self.error = events, [], None
+
+    def interpret(self, current, request):
+        self.events.append("interpret")
+        self.calls.append(request)
+        if self.error:
+            raise self.error
+        return PreferenceEdit(operations=[
+            PreferenceOperation(action="add", field="keywords_include", values=["Go"], explanation="")])
+
+
+class RecordingChat:
+    def __init__(self, events):
+        self.events, self.calls = events, []
+
+    def show(self, view):
+        self.events.append("show")
+        self.calls.append("show")
+
+    def proposal(self, proposal):
+        self.events.append("proposal")
+        self.calls.append(("proposal", proposal.kind))
+
+    def resolved(self, message_id, resolution):
+        self.calls.append(("resolved", message_id, resolution.status))
+
+    def answer(self, callback_id, text):
+        self.calls.append(("answer", callback_id, text))
+
+
+@pytest.fixture
+def pref():
+    from types import SimpleNamespace
+
+    events = []
+    store = MemorySearchSettings()
+    store.seed(SearchPreferences(keywords_include=["Django"]), lambda p: None, force=False,
+               now=datetime.now(timezone.utc))
+    ids = iter(range(1, 100))
+    interpreter = Interpreter(events)
+    use_case = ManageSearchPreferences(store=store, profiles=MemoryProfileStore(), budgets=SearchBudgets(),
+                                       interpreter=interpreter, new_id=lambda: f"{next(ids):032x}")
+    chat = RecordingChat(events)
+
+    class RecordingMessenger:
+        sent = []
+
+        def send_text(self, text):
+            events.append("ack" if text == PREFERENCES_REVIEWING else "reply")
+            self.sent.append(text)
+
+    messenger = RecordingMessenger()
+    builder = Builder()
+    app = FastAPI()
+    add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=messenger, build_profile=builder,
+                         resend_pending=Builder(), cv_generator=NoCv(), offer_messages=NoCv(),
+                         preferences=use_case, preferences_chat=chat)
+    return SimpleNamespace(http=TestClient(app), events=events, store=store, interpreter=interpreter, chat=chat,
+                           messenger=messenger, builder=builder, use_case=use_case)
+
+
+def message(text, *, update_id=80, chat=None, sender=42):
+    return {"update_id": update_id, "message": {
+        "message_id": 400 + update_id, "chat": chat or {"id": 42, "type": "private"},
+        "from": {"id": sender, "is_bot": False}, "text": text}}
+
+
+def callback(*, update_id=90, chat=42, chat_type="private", sender=42, data=f"pref:apply:{DRAFT_ID}",
+             callback_id="cb-1"):
+    query = {"from": {"id": sender, "is_bot": False}, "data": data,
+             "message": {"message_id": 300, "chat": {"id": chat, "type": chat_type}}}
+    if callback_id is not None:
+        query["id"] = callback_id
+    return {"update_id": update_id, "callback_query": query}
+
+
+def test_preferences_without_text_is_synchronous_and_deterministic(pref):
+    response = pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/preferencias"))
+    assert response.status_code == 200 and pref.interpreter.calls == [] and pref.chat.calls == ["show"]
+    assert pref.store.drafts == {} and pref.messenger.sent == []
+
+
+def test_preferences_with_text_acknowledges_then_proposes(pref):
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/preferencias@job_bot quiero Go"))
+    assert pref.events.index("ack") < pref.events.index("interpret") < pref.events.index("proposal")
+    assert pref.interpreter.calls == ["quiero Go"]
+    assert pref.messenger.sent == [PREFERENCES_REVIEWING]
+    assert pref.chat.calls == [("proposal", "draft")]
+    assert list(pref.store.drafts) == [DRAFT_ID]
+
+
+def test_preference_failure_is_reported_without_details(pref, caplog):
+    pref.interpreter.error = RuntimeError("SECRET-REQUEST-TEXT")
+
+    with caplog.at_level(logging.ERROR):
+        response = pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/preferencias quiero Go"))
+
+    assert response.status_code == 200
+    assert pref.messenger.sent == [PREFERENCES_REVIEWING, PREFERENCES_FAILED]
+    assert "SECRET-REQUEST-TEXT" not in caplog.text and "RuntimeError" in caplog.text
+    assert pref.store.drafts == {}
+
+
+@pytest.mark.parametrize("update", [
+    message("/preferencias", chat={"id": 42, "type": "group"}),
+    message("/preferencias quiero Go", sender=7),
+    message("/preferencias", chat={"id": 7, "type": "private"}),
+])
+def test_preferences_outside_the_private_chat_are_ignored(pref, update):
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=update)
+    assert pref.chat.calls == [] and pref.messenger.sent == [] and pref.interpreter.calls == []
+
+
+def _propose(pref):
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/preferencias quiero Go", update_id=1))
+    pref.chat.calls.clear()
+
+
+@pytest.mark.parametrize("update", [
+    callback(chat=7), callback(sender=7), callback(chat_type="group"), callback(data="pref:apply:../x"),
+    callback(data="other"), callback(data=f"pref:apply:{'A' * 32}"), callback(data=f"pref:apply:{DRAFT_ID}\n"),
+    callback(data=f"pref:delete:{DRAFT_ID}"), callback(data=None),
+])
+def test_invalid_callbacks_change_nothing(pref, update):
+    _propose(pref)
+
+    response = pref.http.post("/webhooks/telegram", headers=SECRET, json=update)
+
+    assert response.status_code == 200
+    assert pref.store.drafts[DRAFT_ID].status == "PENDING" and pref.store.prefs.version == 1
+    assert pref.chat.calls == [("answer", "cb-1", "Acción no válida")]
+
+
+def test_invalid_callback_without_id_is_ignored(pref):
+    _propose(pref)
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(chat=7, callback_id=None))
+    assert pref.chat.calls == [] and pref.store.drafts[DRAFT_ID].status == "PENDING"
+
+
+def test_apply_button_applies_once_and_edits_message(pref):
+    _propose(pref)
+
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(update_id=91, callback_id="cb-1"))
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(update_id=92, callback_id="cb-2"))
+
+    assert pref.store.prefs.version == 2 and pref.store.prefs.keywords_include == ["Django", "Go"]
+    assert pref.store.drafts[DRAFT_ID].status == "APPLIED"
+    assert pref.chat.calls == [
+        ("answer", "cb-1", "Aplicado"), ("resolved", 300, "applied"),
+        ("answer", "cb-2", "Esta propuesta ya estaba resuelta"), ("resolved", 300, "already_resolved"),
+    ]
+
+
+def test_repeated_callback_update_is_handled_once(pref):
+    _propose(pref)
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(update_id=93))
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(update_id=93))
+    assert pref.chat.calls == [("answer", "cb-1", "Aplicado"), ("resolved", 300, "applied")]
+
+
+def test_cancel_button_changes_no_preferences(pref):
+    _propose(pref)
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(data=f"pref:cancel:{DRAFT_ID}"))
+    assert pref.store.prefs.version == 1 and pref.store.drafts[DRAFT_ID].status == "CANCELLED"
+    assert pref.chat.calls == [("answer", "cb-1", "Cancelado"), ("resolved", 300, "cancelled")]
+
+
+def test_unknown_draft_is_answered_without_changes(pref):
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=callback(data=f"pref:apply:{'f' * 32}"))
+    assert pref.store.prefs.version == 1
+    assert pref.chat.calls == [("answer", "cb-1", "Esta propuesta ya no es válida"), ("resolved", 300, "not_found")]
+
+
+def test_callback_failure_is_answered_without_details(pref, caplog, monkeypatch):
+    def boom(*args):
+        raise RuntimeError("SECRET-DRAFT")
+
+    monkeypatch.setattr(pref.use_case, "resolve", boom)
+    with caplog.at_level(logging.ERROR):
+        response = pref.http.post("/webhooks/telegram", headers=SECRET, json=callback())
+
+    assert response.status_code == 200
+    assert pref.chat.calls == [("answer", "cb-1", "No pude completar la acción")]
+    assert "SECRET-DRAFT" not in caplog.text and "RuntimeError" in caplog.text
+
+
+def test_build_profile_rebuilds_plan(pref):
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/build_profile"))
+    assert pref.builder.calls == 1
+    assert [q.keywords for q in pref.store.plan.search.queries] == ["Django"]
+    assert pref.messenger.sent == [BUILDING]
+
+
+def test_build_profile_without_keywords_explains_the_plan_was_kept(pref):
+    pref.store.prefs = SearchPreferences(version=1)
+    pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/build_profile"))
+    assert pref.store.plan is None
+    assert pref.messenger.sent == [
+        BUILDING, "Tu perfil se guardó, pero no hay palabras clave para buscar; agrega alguna con /preferencias."]
+
+
+def test_build_profile_reports_a_failed_rebuild_and_keeps_the_profile(pref, monkeypatch, caplog):
+    def boom():
+        raise RuntimeError("SECRET-PLAN")
+
+    monkeypatch.setattr(pref.use_case, "rebuild_plan", boom)
+    with caplog.at_level(logging.ERROR):
+        pref.http.post("/webhooks/telegram", headers=SECRET, json=message("/build_profile"))
+    assert pref.builder.calls == 1
+    assert pref.messenger.sent == [BUILDING, "Tu perfil se guardó, pero no pude actualizar el plan de búsqueda."]
+    assert "SECRET-PLAN" not in caplog.text
+
+
+def test_failed_build_does_not_rebuild_the_plan():
+    preferences = NoPreferences()
+    app = FastAPI()
+    add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=Messenger(),
+                         build_profile=Builder(error=RuntimeError("x")), resend_pending=Builder(),
+                         cv_generator=NoCv(), offer_messages=NoCv(), preferences=preferences,
+                         preferences_chat=NoPreferences())
+    TestClient(app).post("/webhooks/telegram", headers=SECRET, json=_update("/build_profile"))
+    assert preferences.rebuilds == 0
+
+
+def test_help_lists_the_preferences_command():
+    assert "\n/preferencias — ver o cambiar el tipo de ofertas que busco" in HELP

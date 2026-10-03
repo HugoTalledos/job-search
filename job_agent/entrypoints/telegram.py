@@ -16,6 +16,8 @@ from starlette.concurrency import run_in_threadpool
 
 from ..application import GenerateTailoredCv
 from ..application.cv_models import PreparedCvRequest
+from ..application.manage_search_preferences import ManageSearchPreferences
+from ..application.preference_models import DraftResolution, PreferencesView, Proposal
 from ..scoring.ports import OfferMessageIndex
 
 log = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 BUILD_PROFILE_COMMANDS = {"/build-profile", "/build_profile"}
 RESEND_PENDING_COMMAND = "/resend_pending"
 ADJUST_CV_COMMAND = "/ajustar_cv"
+PREFERENCES_COMMAND = "/preferencias"
 
 BUILDING = "Voy a construir tu nuevo perfil profesional"
 ALREADY_BUILDING = "Ya estoy construyendo tu perfil profesional; te aviso cuando termine."
@@ -31,7 +34,8 @@ RESENDING_PENDING = "Estoy buscando propuestas que hayan quedado pendientes de n
 ALREADY_RESENDING = "Ya estoy reenviando las propuestas pendientes."
 HELP = ("Comandos disponibles:\n/build_profile — construir tu perfil profesional"
         "\n/resend_pending — reintentar las notificaciones pendientes"
-        "\n/ajustar_cv — responde con él a una oferta para recibir un CV ajustado")
+        "\n/ajustar_cv — responde con él a una oferta para recibir un CV ajustado"
+        "\n/preferencias — ver o cambiar el tipo de ofertas que busco")
 CV_ACCEPTED = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
 CV_IN_PROGRESS = "Ya estoy ajustando tu CV para esta propuesta; te enviaré el PDF al terminar."
 CV_NEEDS_REPLY = "Para ajustar tu CV, responde con /ajustar_cv al mensaje de la oferta que te interesa."
@@ -39,6 +43,13 @@ CV_UNKNOWN_OFFER = ("No pude identificar la oferta de ese mensaje. Responde con 
                     "a un mensaje de oferta enviado por el bot.")
 CV_NOT_STARTED = ("No pude iniciar el ajuste de tu CV. Revisa que existan tu CV base, tu perfil profesional "
                   "y la descripción completa de la oferta.")
+PREFERENCES_REVIEWING = "Revisando tus preferencias…"
+PREFERENCES_FAILED = "No pude revisar tus preferencias. Inténtalo de nuevo más tarde."
+PREFERENCE_CALLBACK = re.compile(r"pref:(apply|cancel):([0-9a-f]{32})")
+CALLBACK_INVALID = "Acción no válida"
+CALLBACK_FAILED = "No pude completar la acción"
+PLAN_REBUILD_FAILED = "Tu perfil se guardó, pero no pude actualizar el plan de búsqueda."
+PLAN_NO_KEYWORDS = "Tu perfil se guardó, pero no hay palabras clave para buscar; agrega alguna con /preferencias."
 CV_FAILED = ("No pude generar o enviar tu CV para esta propuesta. Puedes intentarlo de nuevo respondiendo "
              "/ajustar_cv a la oferta.")
 
@@ -49,6 +60,36 @@ class ChatMessenger(Protocol):
 
 class ProfileBuilder(Protocol):
     def execute(self) -> Any: ...
+
+
+class PreferencesChat(Protocol):
+    def show(self, view: PreferencesView) -> None: ...
+
+    def proposal(self, proposal: Proposal) -> None: ...
+
+    def resolved(self, message_id: int, resolution: DraftResolution) -> None: ...
+
+    def answer(self, callback_id: str, text: str) -> None: ...
+
+
+def _callback_status(resolution: DraftResolution) -> str:
+    """Short text for ``answerCallbackQuery``; the edited message carries the details."""
+    if resolution.status == "applied":
+        return "Preferencias guardadas" if resolution.plan is None else "Aplicado"
+    if resolution.status == "cancelled":
+        return "Cancelado"
+    if resolution.status == "already_resolved":
+        return "Esta propuesta ya estaba resuelta"
+    return "Esta propuesta ya no es válida"
+
+
+def _is_private_from(message: Any, sender: Any, chat_id: str) -> bool:
+    """The private chat with the configured user, sent by that user."""
+    if not isinstance(message, dict):
+        return False
+    chat = message.get("chat")
+    return (isinstance(chat, dict) and str(chat.get("id")) == chat_id and chat.get("type") == "private"
+            and isinstance(sender, dict) and str(sender.get("id")) == chat_id)
 
 
 def _command(text: str) -> str:
@@ -79,6 +120,8 @@ def add_telegram_webhook(
     resend_pending: ProfileBuilder,
     cv_generator: GenerateTailoredCv,
     offer_messages: OfferMessageIndex,
+    preferences: ManageSearchPreferences,
+    preferences_chat: PreferencesChat,
     execution_lock: LockType | None = None,
     bot_id: int | None = None,
 ) -> None:
@@ -87,7 +130,8 @@ def add_telegram_webhook(
     Only calls carrying ``secret`` (Telegram sends the one given to ``setWebhook``) are accepted, and only
     messages from ``chat_id`` are acted upon; anything else gets ``200`` so Telegram does not resend it.
     ``/ajustar_cv`` is further restricted to the private chat with that user, as a reply to an offer
-    message sent by the bot (``bot_id``, when known).
+    message sent by the bot (``bot_id``, when known). ``/preferencias`` and its inline buttons
+    (``callback_query``) are likewise restricted to the private chat with that user.
     """
     if not secret.strip():
         raise ValueError("TELEGRAM_WEBHOOK_SECRET no está configurado")
@@ -105,8 +149,86 @@ def add_telegram_webhook(
             build_profile.execute()
         except Exception as exc:
             log.error("No se pudo construir el perfil profesional (%s)", type(exc).__name__)
+        else:
+            rebuild_plan()
         finally:
             build_lock.release()
+
+    def rebuild_plan() -> None:
+        try:
+            result = preferences.rebuild_plan()
+        except Exception as exc:
+            log.error("No se pudo recompilar el plan de búsqueda (%s)", type(exc).__name__)
+            notify(PLAN_REBUILD_FAILED)
+            return
+        if result.status == "no_keywords":
+            notify(PLAN_NO_KEYWORDS)
+
+    def notify(text: str) -> None:
+        try:
+            messenger.send_text(text)
+        except Exception as exc:
+            log.error("No se pudo enviar el aviso por Telegram (%s)", type(exc).__name__)
+
+    # --- /preferencias and its inline buttons ---
+
+    def run_proposal(request: str) -> None:
+        try:
+            preferences_chat.proposal(preferences.propose(request, chat_id))
+        except Exception as exc:
+            # Never log the candidate's text or the LLM answer.
+            log.error("No se pudo revisar el cambio de preferencias (%s)", type(exc).__name__)
+            notify(PREFERENCES_FAILED)
+
+    def handle_preferences(message: dict, text: str, background_tasks: BackgroundTasks) -> None:
+        if not _is_private_from(message, message.get("from"), chat_id):
+            log.warning("Ignoring /preferencias outside the configured private chat")
+            return
+        parts = text.strip().split(maxsplit=1)
+        request = parts[1].strip() if len(parts) > 1 else ""
+        if not request:
+            try:
+                preferences_chat.show(preferences.show())
+            except Exception as exc:
+                log.error("No se pudieron mostrar las preferencias (%s)", type(exc).__name__)
+                notify(PREFERENCES_FAILED)
+            return
+        try:
+            messenger.send_text(PREFERENCES_REVIEWING)
+        finally:
+            background_tasks.add_task(run_proposal, request)
+
+    def answer(callback_id: str, text: str) -> None:
+        try:
+            preferences_chat.answer(callback_id, text)
+        except Exception as exc:
+            log.error("No se pudo responder al botón de Telegram (%s)", type(exc).__name__)
+
+    def handle_callback(query: dict) -> None:
+        callback_id = query.get("id")
+        callback_id = callback_id if isinstance(callback_id, str) and callback_id else None
+        message = query.get("message")
+        data = query.get("data")
+        match = PREFERENCE_CALLBACK.fullmatch(data) if isinstance(data, str) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if (callback_id is None or match is None or type(message_id) is not int
+                or not _is_private_from(message, query.get("from"), chat_id)):
+            log.warning("Ignoring an invalid Telegram button press")
+            if callback_id is not None:
+                answer(callback_id, CALLBACK_INVALID)
+            return
+        action, draft_id = match.group(1), match.group(2)
+        try:
+            resolution = preferences.resolve(draft_id, chat_id, action)
+        except Exception as exc:
+            log.error("No se pudo resolver la propuesta %s (%s)", draft_id, type(exc).__name__)
+            answer(callback_id, CALLBACK_FAILED)
+            return
+        answer(callback_id, _callback_status(resolution))
+        try:
+            preferences_chat.resolved(message_id, resolution)
+        except Exception as exc:
+            log.error("No se pudo editar el mensaje de la propuesta %s (%s)", draft_id, type(exc).__name__)
 
     def run_resend() -> None:
         try:
@@ -187,6 +309,11 @@ def add_telegram_webhook(
             return False
 
     def handle(update: dict, background_tasks: BackgroundTasks) -> None:
+        query = update.get("callback_query")
+        if isinstance(query, dict):
+            if not is_repeated(update.get("update_id")):
+                handle_callback(query)
+            return
         message = update.get("message")
         if not isinstance(message, dict) or is_repeated(update.get("update_id")):
             return
@@ -199,6 +326,9 @@ def add_telegram_webhook(
             return
         if _command(text) == ADJUST_CV_COMMAND:
             handle_adjust_cv(message, background_tasks)
+            return
+        if _command(text) == PREFERENCES_COMMAND:
+            handle_preferences(message, text, background_tasks)
             return
         if _command(text) in BUILD_PROFILE_COMMANDS:
             if not build_lock.acquire(blocking=False):

@@ -62,7 +62,7 @@ class LlmConfig(BaseModel):
 
     provider: Literal["anthropic", "openrouter"] = "anthropic"
     model: str | None = None  # default for every task; anthropic falls back to claude-opus-5-5
-    models: dict[Literal["profile", "match", "tailor"], str] = Field(default_factory=dict)
+    models: dict[Literal["profile", "match", "tailor", "preferences"], str] = Field(default_factory=dict)
     openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
 
     def model_for(self, task: str) -> str | None:
