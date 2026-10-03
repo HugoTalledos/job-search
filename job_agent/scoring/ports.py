@@ -27,3 +27,7 @@ class PendingPostingStore(Protocol):
 
 class ScoringTool(Protocol):
     def score(self, profile: Profile, job: JobPosting) -> ScoreResult: ...
+
+
+class OfferEnricher(Protocol):
+    def enrich(self, job: JobPosting) -> PostingEnrichment: ...
