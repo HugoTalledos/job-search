@@ -31,3 +31,7 @@ class ScoringTool(Protocol):
 
 class OfferEnricher(Protocol):
     def enrich(self, job: JobPosting) -> PostingEnrichment: ...
+
+
+class OfferNotifier(Protocol):
+    def notify(self, job: JobPosting, result: ScoreResult, enrichment: PostingEnrichment) -> None: ...
