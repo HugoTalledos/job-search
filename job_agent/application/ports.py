@@ -201,6 +201,8 @@ class CvTrackingStore(Protocol):
 
 
 class CvArtifactStore(Protocol):
-    def save(self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str) -> CvArtifacts: ...
+    def save(
+        self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str, *, attempt_id: str,
+    ) -> CvArtifacts: ...
 
     def read_pdf(self, artifacts: CvArtifacts) -> bytes: ...

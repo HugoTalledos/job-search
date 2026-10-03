@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from google.cloud import storage
 
 from ...application.cv_models import CvArtifacts, CvVersionKey
@@ -14,22 +16,30 @@ class FirebaseCvArtifactStore:
         self.bucket_name = bucket_name
         self.bucket = (client if client is not None else storage.Client()).bucket(bucket_name)
 
-    def save(self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str) -> CvArtifacts:
+    def save(
+        self, key: CvVersionKey, pdf: bytes, markdown: str, readme: str, *, attempt_id: str,
+    ) -> CvArtifacts:
         """Upload a claimed, not-yet-ready version; return only after all three succeed.
 
-        The caller owns the claim and must not call save for a READY version. A partial
-        failure leaves private objects in place for the next claimed attempt to overwrite.
+        Each claim owns an immutable attempt directory. A later claimed retry uses
+        its new token, so uploads from an expired worker cannot overwrite READY bytes.
+        A partial failure leaves private objects unreferenced; only the winning claim
+        can publish its URIs through mark_ready. Existing objects are never overwritten.
         No ACLs or download tokens are added; deployment must supply a private bucket.
         """
+        if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', attempt_id):
+            raise ValueError('attempt_id must be a nonempty safe path component')
         if not pdf:
             raise ValueError('A nonempty PDF is required')
-        prefix = f'cvs/{key.posting_id}/{key.version_id}'
+        prefix = f'cvs/{key.posting_id}/{key.version_id}/{attempt_id}'
         for name, content, content_type in (
             ('cv.pdf', pdf, 'application/pdf'),
             ('resume.md', markdown, 'text/markdown; charset=utf-8'),
             ('README.md', readme, 'text/markdown; charset=utf-8'),
         ):
-            self.bucket.blob(f'{prefix}/{name}').upload_from_string(content, content_type=content_type)
+            self.bucket.blob(f'{prefix}/{name}').upload_from_string(
+                content, content_type=content_type, if_generation_match=0,
+            )
         uri = f'gs://{self.bucket_name}/{prefix}'
         return CvArtifacts(f'{uri}/cv.pdf', f'{uri}/resume.md', f'{uri}/README.md')
 

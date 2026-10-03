@@ -261,7 +261,9 @@ def test_partial_storage_upload_never_publishes_ready_tracking(store, client, ke
     storage_client.fail_on = 'README.md'
     claim = store.claim(key, now)
     with pytest.raises(RuntimeError, match='upload failed'):
-        FirebaseCvArtifactStore('private-bucket', storage_client).save(key, b'pdf', 'cv', 'readme')
+        FirebaseCvArtifactStore('private-bucket', storage_client).save(
+            key, b'pdf', 'cv', 'readme', attempt_id=claim.attempt_id,
+        )
     assert version(client, key)['generation_status'] == 'PROCESSING'
     assert client.docs['application_tracking/offer'].get('stage') != 'CV_READY'
     with pytest.raises(LookupError):
@@ -286,3 +288,34 @@ def test_non_generation_claims_do_not_authorize_finalization(store, key, now, ar
     assert store.claim(key, now).attempt_id is None
     store.mark_ready(key, artifacts, match, tailored, attempt_id=first.attempt_id)
     assert store.claim(key, now).attempt_id is None
+
+
+def test_stale_upload_after_new_attempt_is_ready_cannot_change_published_bytes(store, key, now, match, tailored):
+    from job_agent.adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
+    from tests.adapters.test_firebase_cv_artifacts import Client as StorageClient
+    storage_client = StorageClient()
+    artifact_store = FirebaseCvArtifactStore('private-bucket', storage_client)
+
+    # A pauses before upload; B reclaims after expiry and completes all publication.
+    first = store.claim(key, now)
+    winner = store.claim(key, now + timedelta(minutes=30))
+    winning_artifacts = artifact_store.save(
+        key, b'winner pdf', 'winner cv', 'winner readme', attempt_id=winner.attempt_id,
+    )
+    store.mark_ready(key, winning_artifacts, match, tailored, attempt_id=winner.attempt_id)
+    winning_objects = dict(storage_client.objects)
+
+    # A resumes after B is READY. Its writes must never address B's immutable objects.
+    stale_artifacts = artifact_store.save(
+        key, b'stale pdf', 'stale cv', 'stale readme', attempt_id=first.attempt_id,
+    )
+    with pytest.raises(ValueError, match='claim'):
+        store.mark_ready(key, stale_artifacts, match, tailored, attempt_id=first.attempt_id)
+    store.mark_failed(key, attempt_id=first.attempt_id)
+
+    ready = store.load_ready(key)
+    assert ready.artifacts == winning_artifacts
+    assert stale_artifacts.pdf_uri != ready.artifacts.pdf_uri
+    assert artifact_store.read_pdf(ready.artifacts) == b'winner pdf'
+    assert all(storage_client.objects[name] == value for name, value in winning_objects.items())
+    assert store.claim(key, now + timedelta(hours=1)).action == 'reuse'
