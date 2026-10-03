@@ -16,6 +16,7 @@ from job_contracts import CollectorPlan, SearchPreferences
 from .cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
 from .preference_models import DraftResolution, PreferenceDraft
 
+from ..domain.preference_edits import PreferenceEdit
 from ..domain.models import JobMatch, JobPosting, Profile, RepoEvidence, RepoRef, StoredProfile, TailoredResume
 
 # --- Candidate data ----------------------------------------------------------------------------
@@ -68,6 +69,10 @@ class ResumeTailor(Protocol):
         """Tailor the base resume to ``job``. With ``starting_from`` (an existing tailored version derived
         from the same base), make the smallest changes that make it fit the new posting."""
         ...
+
+
+class PreferenceInterpreter(Protocol):
+    def interpret(self, current: SearchPreferences, request: str) -> PreferenceEdit: ...
 
 
 # --- Job market ---------------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from job_agent.adapters.llm import (
     AnthropicStructuredModel,
     LLMError,
     LlmJobMatcher,
+    LlmPreferenceInterpreter,
     LlmResumeTailor,
     OpenRouterStructuredModel,
 )
@@ -173,3 +174,33 @@ def test_matcher_preserves_structured_requirement_evidence(provider, job, profil
     requirement = schema["$defs"]["JobRequirement"]
     assert set(requirement["properties"]) == {"name", "priority", "covered", "evidence"}
     assert requirement["properties"]["priority"]["enum"] == ["must", "nice"]
+
+
+def test_llm_preference_interpreter_sends_current_preferences_and_text():
+    from job_contracts import SearchPreferences
+
+    from job_agent.adapters.llm import prompts
+    from job_agent.domain.preference_edits import PreferenceEdit, PreferenceOperation
+
+    calls = []
+    edit = PreferenceEdit(operations=[PreferenceOperation(action="add", field="keywords_include", values=["Go"], explanation="")])
+
+    class Fake:
+        def complete(self, **kwargs):
+            calls.append(kwargs)
+            return edit
+
+    current = SearchPreferences(keywords_include=["Python"])
+    assert LlmPreferenceInterpreter(Fake()).interpret(current, "agrega Go") == edit
+    call = calls[0]
+    assert call["system"] == prompts.PREFERENCES_SYSTEM and call["schema"] is PreferenceEdit
+    assert call["effort"] == "low" and call["max_tokens"] == 4000
+    text = " ".join(block["text"] for block in call["content"])
+    assert "agrega Go" in text and '"keywords_include"' in text and "Python" in text
+
+
+def test_preference_edit_schema_is_strict_friendly():
+    from job_agent.domain.preference_edits import PreferenceEdit
+
+    schema = strict_json_schema(PreferenceEdit)
+    assert schema["$defs"]["PreferenceOperation"]["additionalProperties"] is False

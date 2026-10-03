@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from job_contracts import SearchPreferences
+
+from ...domain.preference_edits import PreferenceEdit
 from ...domain.models import (
     JobMatch,
     JobPosting,
@@ -64,4 +67,20 @@ class LlmResumeTailor:
             schema=TailoredResume,
             effort="high",
             max_tokens=16000,
+        )
+
+
+class LlmPreferenceInterpreter:
+    """PreferenceInterpreter port."""
+
+    def __init__(self, model: StructuredModel) -> None:
+        self.model = model
+
+    def interpret(self, current: SearchPreferences, request: str) -> PreferenceEdit:
+        return self.model.complete(
+            system=prompts.PREFERENCES_SYSTEM,
+            content=prompts.preferences_content(current, request),
+            schema=PreferenceEdit,
+            effort="low",
+            max_tokens=4000,
         )

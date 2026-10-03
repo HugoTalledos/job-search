@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+from job_contracts import SearchPreferences
+
 from ...domain.models import JobMatch, JobPosting, Profile, RepoEvidence
 
 # Content blocks use the Anthropic shape ({"type": "text", "text": ..., "cache_control"?}); adapters for
@@ -57,6 +59,23 @@ similar posting. Start from it and make the smallest changes that make it fit th
 only those changes, relative to the starting version. The hard rules still apply: anything you add must
 be backed by the base resume or the profile."""
 
+PREFERENCES_SYSTEM = """You translate a job candidate's request (usually in Spanish) into operations that edit
+their job-search preferences. You receive the current preferences as JSON and the request.
+Rules:
+- Return only operations for what the candidate asked. Never touch fields they did not mention.
+- Actions: `add` and `remove` work only on list fields; `set` replaces a list or sets a scalar.
+- `exclude_companies` may only contain company names the candidate literally wrote.
+- When the candidate excludes an industry ("nada de bancos"), use `add` on `exclude_title_keywords` with the
+  literal word and its obvious English/Spanish form (e.g. `banco`, `bank`). Never produce a list of guessed companies.
+- `work_types` allowed values: remote, hybrid, on_site. Map Spanish words (remoto, híbrido, presencial) to them.
+- `experience_levels` allowed values: internship, entry, associate, mid_senior, director, executive. Map Spanish
+  seniority words (practicante, junior, semi-senior/senior, director, ejecutivo) to them.
+- `posted_within_days` is a single number from 1 to 30.
+- `use_profile_keywords` takes `true` or `false`. For "solo quiero...", `set` `use_profile_keywords` to `false` and
+  `set` `keywords_include` to exactly what was asked.
+- Anything else, or anything ambiguous, is a single `unclear` operation with field `none` and a short Spanish
+  `explanation`. Write every `explanation` in Spanish."""
+
 
 def _text(text: str, cache: bool = False) -> dict:
     block = {"type": "text", "text": text}
@@ -95,3 +114,13 @@ def tailor_content(
     if starting_from:
         content.append(_text(f"<starting_version>\n{starting_from}\n</starting_version>"))
     return content
+
+
+def preferences_content(current: SearchPreferences, request: str) -> list[dict]:
+    current_json = current.model_dump_json(
+        indent=1, exclude={"version", "updated_at"}
+    )
+    return [
+        _text(f"<current_preferences>\n{current_json}\n</current_preferences>"),
+        _text(f"<request>\n{request}\n</request>"),
+    ]

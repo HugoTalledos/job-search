@@ -7,12 +7,13 @@ Prompts are provider-neutral (``prompts``); a ``StructuredModel`` provider does 
 from .anthropic_model import AnthropicStructuredModel
 from .openrouter_model import OpenRouterStructuredModel
 from .structured import LLMError, StructuredModel
-from .tasks import LlmJobMatcher, LlmProfileInferer, LlmResumeTailor
+from .tasks import LlmJobMatcher, LlmPreferenceInterpreter, LlmProfileInferer, LlmResumeTailor
 
 __all__ = [
     "AnthropicStructuredModel",
     "LLMError",
     "LlmJobMatcher",
+    "LlmPreferenceInterpreter",
     "LlmProfileInferer",
     "LlmResumeTailor",
     "OpenRouterStructuredModel",
