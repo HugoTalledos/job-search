@@ -8,8 +8,10 @@ confirma que la evaluación haya terminado. Una API key ausente o incorrecta rec
 trabajo.
 
 Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY`,
-`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` y `TELEGRAM_WEBHOOK_SECRET` en el entorno (o en `.env` para
-una ejecución local). Instala las dependencias
+`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET` y
+`FIREBASE_STORAGE_BUCKET` en el entorno (o en `.env` para una ejecución local). El servicio no arranca
+si falta alguna; el bucket se explica en [CV a medida desde Telegram](#cv-a-medida-desde-telegram-ajustar_cv).
+Instala las dependencias
 de `requirements.txt` y arranca el servicio desde la raíz del repositorio:
 
 ```bash
@@ -71,6 +73,7 @@ del bot. Comandos disponibles:
 |---|---|
 | `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
 | `/resend_pending` | Responde inmediatamente «Estoy buscando propuestas que hayan quedado pendientes de notificar». En segundo plano, busca ofertas con estado `PENDING_NOTIFICATION` y reenvía la notificación usando la puntuación y el enriquecimiento guardados. Marca `NOTIFIED` cada envío confirmado; los fallidos conservan `PENDING_NOTIFICATION`. Al terminar informa cuántas se notificaron y cuántas fallaron. |
+| `/ajustar_cv` (como respuesta a un mensaje de oferta del bot) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. |
 
 Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos. Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
 
@@ -78,6 +81,58 @@ Cualquier otro mensaje recibe la lista de comandos. Si escribes `/build-profile`
 construyendo un perfil, el bot te lo indica y no inicia otro. Igual que la evaluación, las
 construcciones se serializan dentro de cada instancia del servicio, sin cola persistente. El servicio
 necesita `git` instalado para leer los repositorios.
+
+### CV a medida desde Telegram (`/ajustar_cv`)
+
+Cuando una oferta te interesa, **responde al mensaje de esa oferta** (mantén pulsado → Responder) con
+`/ajustar_cv`. El bot solo atiende el comando en el chat privado con `TELEGRAM_CHAT_ID` (el chat y el
+remitente deben ser ese mismo id; en grupos se ignora) y solo si respondes a un mensaje enviado por el bot.
+
+- **Identificación de la oferta.** Busca primero `telegram_offer_messages/{chat_id}_{message_id}` del
+  mensaje respondido. Para mensajes enviados antes de existir ese registro, usa únicamente el enlace
+  «Ver publicación» del mensaje (entidad `text_link`) si coincide con exactamente un documento
+  `job_postings` por `job.url`. Nunca deduce la oferta del título ni del texto. Si no hay una
+  identificación única, el bot lo explica y no genera nada; un `/ajustar_cv` sin respuesta recibe
+  instrucciones de uso.
+- **Confirmación.** Antes de responder, lee el CV base (`resume_path`), `profiles/current` y la oferta
+  completa, y reclama la versión en Firestore. Si falta alguno de ellos, el bot avisa al momento y no
+  programa trabajo. Si la misma versión ya se está generando, te lo indica sin iniciar otra.
+- **Generación en segundo plano.** Analiza requisitos con el modelo de `llm` (tarea `match`), ajusta el
+  CV (tarea `tailor`), lo renderiza a PDF y sube `cv.pdf`, `resume.md` y `README.md` (análisis,
+  evidencia, brechas, cambios y huellas de las entradas) a `gs://<bucket>/cvs/{posting_id}/{version_id}/…`.
+  Luego te envía el resumen y el PDF como respuesta al mensaje de la oferta. Si algo falla, recibes un
+  aviso genérico (sin contenido del CV ni de la oferta) y puedes repetir `/ajustar_cv`.
+- **Versiones y seguimiento.** `application_tracking/{posting_id}` registra la oferta (etapa `CV_READY`
+  cuando hay artefactos completos; **no** significa que te postulaste) y
+  `application_tracking/{posting_id}/versions/{version_id}` guarda cada versión con sus estados de
+  generación (`PROCESSING`, `READY`, `FAILED`) y entrega (`PENDING`, `SENT`, `FAILED`). Repetir el
+  comando sin cambios en el CV base, el perfil o la oferta reenvía el PDF ya generado sin volver a llamar
+  al LLM; si cambia alguna entrada, se crea una versión nueva y se conserva la anterior. El reclamo
+  expira a los 30 minutos, de modo que una ejecución interrumpida se puede retomar.
+
+**Configuración previa al despliegue:**
+
+1. **Plan Blaze y bucket.** Cloud Storage for Firebase requiere el plan Blaze. Crea (o usa) un bucket
+   **privado** del proyecto, por ejemplo `<proyecto>.firebasestorage.app`, con la prevención de acceso
+   público activada (`gcloud storage buckets update gs://<bucket> --public-access-prevention`). Los
+   archivos no se publican con URL; solo se guardan rutas `gs://` en Firestore.
+2. **`FIREBASE_STORAGE_BUCKET`.** Nombre del bucket sin `gs://` ni barras. Es obligatorio para
+   `job_agent.webhook:app`; el flujo local `job_agent run` no lo usa.
+3. **Permisos (IAM).** La cuenta de servicio del agente (la de Cloud Run o la de
+   `GOOGLE_APPLICATION_CREDENTIALS`) ya necesita Firestore; además debe crear y leer objetos del bucket,
+   por ejemplo con `roles/storage.objectUser` sobre ese bucket:
+   `gcloud storage buckets add-iam-policy-binding gs://<bucket> --member=serviceAccount:<cuenta> --role=roles/storage.objectUser`.
+4. **PDF.** El renderizado usa WeasyPrint (`requirements.txt`), que necesita las bibliotecas del sistema
+   de Pango (por ejemplo `libpango-1.0-0` y `libpangoft2-1.0-0` en Debian/Ubuntu, `pango` en macOS) en la
+   imagen del servicio. Sin ellas la generación falla y el bot avisa del fallo.
+5. **CV base y modelo.** El archivo `resume_path` de `config.yaml` debe estar disponible para el
+   servicio, y la clave del proveedor de `llm` (tareas `match` y `tailor`) configurada.
+6. **Menú del bot.** Vuelve a ejecutar `.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>`
+   para que `/ajustar_cv` aparezca en el menú de comandos.
+
+La generación no usa el bloqueo de la evaluación de ofertas: no la detiene ni cambia el estado
+`NOTIFIED` de la propuesta. No se garantiza una entrega exactamente única si Telegram acepta un envío
+y Firestore falla antes de registrar su confirmación.
 
 ## Buscador local con Firestore
 

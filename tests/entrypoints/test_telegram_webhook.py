@@ -6,7 +6,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from job_agent.entrypoints.telegram import ALREADY_BUILDING, BUILDING, HELP, RESENDING_PENDING, add_telegram_webhook
+from job_agent.entrypoints.telegram import (
+    ALREADY_BUILDING, BUILDING, CV_ACCEPTED, CV_FAILED, CV_IN_PROGRESS, CV_NEEDS_REPLY, CV_NOT_STARTED,
+    CV_UNKNOWN_OFFER, HELP, RESENDING_PENDING, SECRET_HEADER, add_telegram_webhook,
+)
 from job_agent.scoring.run import ResendReport
 
 SECRET = {"X-Telegram-Bot-Api-Secret-Token": "hook-secret"}
@@ -31,10 +34,29 @@ class Builder:
             raise self.error
 
 
+class NoCv:
+    """CV ports for tests of the other commands: any use is a failure."""
+
+    def prepare(self, posting_id, now):
+        raise AssertionError("unexpected CV request")
+
+    def execute(self, prepared, chat_id, reply_to_message_id):
+        raise AssertionError("unexpected CV generation")
+
+    def resolve(self, chat_id, message_id):
+        raise AssertionError("unexpected offer lookup")
+
+    def resolve_unique_url(self, url):
+        raise AssertionError("unexpected offer lookup")
+
+
+CV_PORTS = {"cv_generator": NoCv(), "offer_messages": NoCv()}
+
+
 def _client(builder=None, messenger=None):
     app = FastAPI()
     add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=messenger or Messenger(),
-                         build_profile=builder or Builder(), resend_pending=Builder())
+                         build_profile=builder or Builder(), resend_pending=Builder(), **CV_PORTS)
     return TestClient(app)
 
 
@@ -53,7 +75,7 @@ def test_resend_pending_replies_immediately_and_runs_in_background():
     resender, messenger = Resender(), Messenger()
     app = FastAPI()
     add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=messenger,
-                         build_profile=Builder(), resend_pending=resender)
+                         build_profile=Builder(), resend_pending=resender, **CV_PORTS)
     client = TestClient(app)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -178,10 +200,262 @@ def test_second_request_while_building_does_not_start_another_build():
 def test_blank_secret_is_rejected_at_startup():
     with pytest.raises(ValueError, match="TELEGRAM_WEBHOOK_SECRET"):
         add_telegram_webhook(FastAPI(), secret=" ", chat_id="42", messenger=Messenger(),
-                             build_profile=Builder(), resend_pending=Builder())
+                             build_profile=Builder(), resend_pending=Builder(), **CV_PORTS)
 
 
 def test_secret_telegram_would_reject_is_rejected_at_startup():
     with pytest.raises(ValueError, match="TELEGRAM_WEBHOOK_SECRET"):
         add_telegram_webhook(FastAPI(), secret="has spaces!", chat_id="42", messenger=Messenger(),
-                             build_profile=Builder(), resend_pending=Builder())
+                             build_profile=Builder(), resend_pending=Builder(), **CV_PORTS)
+
+
+# --- /ajustar_cv: a reply to a bot offer message generates a tailored CV in the background ---
+
+BOT_ID = 777
+OFFER_MESSAGE = {"message_id": 91, "from": {"id": BOT_ID, "is_bot": True}, "chat": {"id": 42, "type": "private"},
+                 "text": "Backend Engineer — Ver publicación"}
+
+
+def _cv_update(text="/ajustar_cv", *, update_id=50, chat=None, sender=42, replied=OFFER_MESSAGE):
+    message = {"message_id": 200 + update_id, "chat": chat or {"id": 42, "type": "private"},
+               "from": {"id": sender, "is_bot": False}, "text": text}
+    if replied is not None:
+        message["reply_to_message"] = replied
+    return {"update_id": update_id, "message": message}
+
+
+def _legacy_offer(*entities):
+    return {**OFFER_MESSAGE, "message_id": 80, "entities": list(entities)}
+
+
+def _link(url):
+    return {"type": "text_link", "offset": 0, "length": 5, "url": url}
+
+
+REPLY_COMMAND = _cv_update()
+GROUP_REPLY = _cv_update(chat={"id": 42, "type": "group"})
+
+
+class OfferMessages:
+    def __init__(self):
+        self.messages = {("42", 91): "offer"}
+        self.urls = {"https://jobs.example/offer": "offer"}
+        self.url_lookups = []
+
+    def resolve(self, chat_id, message_id):
+        return self.messages.get((chat_id, message_id))
+
+    def resolve_unique_url(self, url):
+        self.url_lookups.append(url)
+        return self.urls.get(url)
+
+
+@pytest.fixture
+def cv(job, profile, match, tailored):
+    from types import SimpleNamespace
+
+    from job_agent.adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
+    from job_agent.adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
+    from job_agent.application import GenerateTailoredCv
+    from tests.adapters.test_firebase_cv_artifacts import Client as StorageClient
+    from tests.adapters.test_firestore_cv_tracking import Client as FirestoreClient
+
+    events, sent = [], []
+    state = SimpleNamespace(profile=profile, fail=None, pdf_calls=[])
+
+    def step(name, result):
+        def run(*args):
+            events.append(name)
+            if state.fail == name:
+                raise RuntimeError("SECRET-CV-TEXT from " + name)
+            return result(*args)
+        return run
+
+    def send_pdf(chat_id, reply_to, pdf):
+        state.pdf_calls.append((chat_id, reply_to, pdf))
+        return 300 + len(state.pdf_calls)
+
+    use_case = GenerateTailoredCv(
+        resume=SimpleNamespace(read=lambda: "Base CV: Python"),
+        profile_reader=SimpleNamespace(load=lambda: state.profile),
+        posting_reader=SimpleNamespace(load=lambda posting_id: job),
+        matcher=SimpleNamespace(score=step("match", lambda *a: match)),
+        tailor=SimpleNamespace(tailor=step("tailor", lambda *a: tailored)),
+        renderer=SimpleNamespace(render=step("render", lambda markdown: b"%PDF-cv")),
+        tracking=FirestoreCvTrackingStore(FirestoreClient()),
+        artifacts=FirebaseCvArtifactStore("private-bucket", StorageClient()),
+        delivery=SimpleNamespace(send_summary=step("send_summary", lambda *a: 300),
+                                 send_pdf=step("send_pdf", send_pdf)),
+    )
+
+    class RecordingMessenger:
+        def send_text(self, text):
+            events.append("ack" if text == CV_ACCEPTED else "reply")
+            sent.append(text)
+
+    offers = OfferMessages()
+    app = FastAPI()
+    add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=RecordingMessenger(),
+                         build_profile=Builder(), resend_pending=Builder(), cv_generator=use_case,
+                         offer_messages=offers, bot_id=BOT_ID)
+    return SimpleNamespace(http=TestClient(app), events=events, sent=sent, state=state, offers=offers,
+                           use_case=use_case)
+
+
+@pytest.fixture
+def http(cv):
+    return cv.http
+
+
+@pytest.fixture
+def events(cv):
+    return cv.events
+
+
+def test_valid_reply_acknowledges_before_generation(http, events):
+    response = http.post("/webhooks/telegram", headers=SECRET, json=REPLY_COMMAND)
+    assert response.status_code == 200
+    assert events.index("ack") < events.index("match") < events.index("send_pdf")
+
+
+def test_accepted_request_gets_the_exact_acknowledgment_and_pdf_replies_to_the_offer(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update("/ajustar_cv@job_bot"))
+
+    assert cv.sent == ["Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."]
+    assert cv.state.pdf_calls == [("42", 91, b"%PDF-cv")]
+    assert cv.offers.url_lookups == []
+
+
+@pytest.mark.parametrize("chat", [{"id": 42, "type": "group"}, {"id": -1001, "type": "supergroup"}, {"id": 42}])
+def test_group_reply_does_not_generate(cv, chat):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(chat=chat))
+    assert "match" not in cv.events and cv.sent == []
+
+
+def test_group_reply_fixture_does_not_generate(http, events):
+    http.post("/webhooks/telegram", headers=SECRET, json=GROUP_REPLY)
+    assert "match" not in events
+
+
+def test_unique_legacy_url_from_text_link_identifies_the_offer(cv):
+    legacy = _legacy_offer(_link("https://jobs.example/offer"), _link("https://jobs.example/offer"))
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(replied=legacy))
+
+    assert cv.offers.url_lookups == ["https://jobs.example/offer"]
+    assert cv.sent == [CV_ACCEPTED]
+    assert cv.state.pdf_calls == [("42", 80, b"%PDF-cv")]
+
+
+@pytest.mark.parametrize("entities, lookups", [
+    ([_link("https://jobs.example/offer"), _link("https://jobs.example/other")], []),
+    ([_link("https://jobs.example/unknown")], ["https://jobs.example/unknown"]),
+    ([{"type": "url", "offset": 0, "length": 26, "url": "https://jobs.example/offer"}], []),
+    ([], []),
+])
+def test_unidentifiable_legacy_offer_gets_an_explanation_without_work(cv, entities, lookups):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(replied=_legacy_offer(*entities)))
+
+    assert cv.sent == [CV_UNKNOWN_OFFER]
+    assert "match" not in cv.events
+    assert cv.offers.url_lookups == lookups
+
+
+def test_plain_text_url_is_not_used_for_legacy_lookup(cv):
+    legacy = {**_legacy_offer(), "text": "Ver https://jobs.example/offer"}
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(replied=legacy))
+
+    assert cv.sent == [CV_UNKNOWN_OFFER] and cv.offers.url_lookups == []
+
+
+def test_command_without_reply_explains_how_to_use_it(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(replied=None))
+
+    assert cv.sent == [CV_NEEDS_REPLY]
+    assert "match" not in cv.events
+
+
+@pytest.mark.parametrize("author", [{"id": 42, "is_bot": False}, {"id": 555, "is_bot": True}, None])
+def test_reply_to_a_message_not_sent_by_the_bot_does_no_work(cv, author):
+    replied = {k: v for k, v in OFFER_MESSAGE.items() if k != "from"}
+    if author is not None:
+        replied["from"] = author
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(replied=replied))
+
+    assert cv.sent == [CV_UNKNOWN_OFFER]
+    assert "match" not in cv.events
+
+
+@pytest.mark.parametrize("sender", [7, None])
+def test_command_from_another_sender_is_ignored(cv, sender):
+    update = _cv_update(sender=sender or 42)
+    if sender is None:
+        del update["message"]["from"]
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=update)
+
+    assert cv.events == [] and cv.sent == []
+
+
+def test_wrong_secret_does_not_generate(cv):
+    response = cv.http.post("/webhooks/telegram", headers={SECRET_HEADER: "wrong"}, json=REPLY_COMMAND)
+
+    assert response.status_code == 401
+    assert cv.events == [] and cv.sent == []
+
+
+def test_resent_update_starts_one_generation(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=60))
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=60))
+
+    assert cv.events.count("match") == 1 and cv.sent == [CV_ACCEPTED]
+
+
+def test_live_claim_is_reported_without_starting_another_generation(cv):
+    from datetime import datetime, timezone
+
+    assert cv.use_case.prepare("offer", datetime.now(timezone.utc)).action == "generate"
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=61))
+
+    assert cv.sent == [CV_IN_PROGRESS]
+    assert "match" not in cv.events and cv.state.pdf_calls == []
+
+
+def test_ready_version_is_resent_without_llm(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=62))
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=63))
+
+    assert cv.sent == [CV_ACCEPTED, CV_ACCEPTED]
+    assert cv.events.count("match") == cv.events.count("tailor") == cv.events.count("render") == 1
+    assert len(cv.state.pdf_calls) == 2
+
+
+def test_missing_inputs_are_reported_at_once_without_scheduling(cv, caplog):
+    cv.state.profile = None
+
+    with caplog.at_level(logging.ERROR):
+        response = cv.http.post("/webhooks/telegram", headers=SECRET, json=REPLY_COMMAND)
+
+    assert response.status_code == 200
+    assert cv.sent == [CV_NOT_STARTED]
+    assert "match" not in cv.events
+
+
+@pytest.mark.parametrize("failing", ["tailor", "send_pdf"])
+def test_background_failure_is_reported_without_details(cv, caplog, failing):
+    cv.state.fail = failing
+
+    with caplog.at_level(logging.ERROR):
+        response = cv.http.post("/webhooks/telegram", headers=SECRET, json=REPLY_COMMAND)
+
+    assert response.status_code == 200
+    assert cv.sent == [CV_ACCEPTED, CV_FAILED]
+    assert "SECRET-CV-TEXT" not in caplog.text and "SECRET-CV-TEXT" not in "".join(cv.sent)
+    assert "RuntimeError" in caplog.text
+
+
+def test_help_lists_the_cv_command():
+    assert "/ajustar_cv" in HELP

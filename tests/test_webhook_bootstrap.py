@@ -4,10 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
-from google.cloud import firestore
+from google.cloud import firestore, storage
 
 from job_agent.config import Config, MatchingConfig
 from job_agent.scoring.models import PostingEnrichment, ScoreResult, TelegramMessageRef
+from tests.adapters.test_firebase_cv_artifacts import Client as StorageClient
 
 
 class Snapshot:
@@ -64,7 +65,10 @@ def webhook(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-fixture-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "telegram-secret")
+    monkeypatch.setenv("FIREBASE_STORAGE_BUCKET", "private-bucket")
     monkeypatch.setattr(firestore, "Client", lambda **kwargs: FakeFirestoreClient())
+    # Never reach real Cloud Storage: keep the artifact adapter, replace only its client.
+    monkeypatch.setattr(storage, "Client", lambda **kwargs: StorageClient())
     module = importlib.import_module("job_agent.webhook")
     monkeypatch.setattr(module, "load_dotenv", lambda: None)
     monkeypatch.setattr(module, "load_config", lambda: Config(), raising=False)
@@ -92,7 +96,8 @@ def test_webhook_requires_openrouter_key_at_startup(webhook, monkeypatch):
         webhook.build_webhook_app()
 
 
-@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET"])
+@pytest.mark.parametrize("missing", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET",
+                                     "FIREBASE_STORAGE_BUCKET"])
 def test_webhook_requires_telegram_credentials_at_startup(webhook, monkeypatch, missing):
     monkeypatch.delenv(missing)
 
@@ -300,3 +305,67 @@ def _wait_for_message(messages):
             return True
         time.sleep(0.01)
     return False
+
+
+def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
+    webhook, monkeypatch, tmp_path, profile, job, match, tailored
+):
+    from job_agent.adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
+    from tests.adapters.test_firestore_cv_tracking import Client as TransactionalClient
+
+    resume = tmp_path / "base.md"
+    resume.write_text("Base CV: Python")
+    monkeypatch.setattr(webhook, "load_config", lambda: Config(resume_path=str(resume)))
+    client = FakeFirestoreClient()
+    client.docs["profiles/current"] = profile.model_dump()
+    client.docs["telegram_offer_messages/42_91"] = {"posting_id": "original"}
+    monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
+    # The scoring fake has no transactions; claims use the transactional fake with the same posting.
+    tracking_client = TransactionalClient()
+    tracking_client.docs["job_postings/original"] = {"job": job.model_dump(), "status": "NOTIFIED"}
+    monkeypatch.setattr(webhook, "FirestoreCvTrackingStore", lambda c: FirestoreCvTrackingStore(tracking_client))
+    llm_calls, delivered, messages = [], [], []
+    monkeypatch.setattr(webhook, "LlmJobMatcher", lambda model: type("Matcher", (), {
+        "score": lambda self, *args: llm_calls.append("match") or match})())
+    monkeypatch.setattr(webhook, "LlmResumeTailor", lambda model: type("Tailor", (), {
+        "tailor": lambda self, *args: llm_calls.append("tailor") or tailored})())
+    monkeypatch.setattr(webhook, "RequiredPdfRenderer", lambda: type("Renderer", (), {
+        "render": lambda self, markdown: b"%PDF-wired"})())
+
+    class FakeDelivery:
+        def __init__(self, token):
+            assert token == "telegram-fixture-token"
+
+        def send_summary(self, chat_id, reply_to, summary):
+            delivered.append(("summary", chat_id, reply_to))
+            return 301
+
+        def send_pdf(self, chat_id, reply_to, pdf):
+            delivered.append(("pdf", chat_id, reply_to, pdf))
+            return 302
+
+    monkeypatch.setattr(webhook, "TelegramCvDelivery", FakeDelivery)
+    monkeypatch.setattr(webhook.TelegramNotifier, "send_text", lambda self, text: messages.append(text))
+    http = TestClient(webhook.build_webhook_app())
+
+    def reply(update_id):
+        return http.post("/webhooks/telegram", headers={"X-Telegram-Bot-Api-Secret-Token": "telegram-secret"},
+                         json={"update_id": update_id, "message": {
+                             "message_id": 500 + update_id, "chat": {"id": 42, "type": "private"},
+                             "from": {"id": 42, "is_bot": False}, "text": "/ajustar_cv",
+                             "reply_to_message": {"message_id": 91, "from": {"id": 1, "is_bot": True}}}})
+
+    assert reply(31).status_code == 200
+    assert reply(32).status_code == 200
+
+    ack = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
+    assert messages == [ack, ack]
+    assert llm_calls == ["match", "tailor"]
+    assert delivered.count(("pdf", "42", 91, b"%PDF-wired")) == 2
+    tracking = tracking_client.docs["application_tracking/original"]
+    assert tracking["stage"] == "CV_READY"
+
+
+@pytest.mark.parametrize("token, bot_id", [("123456:ABC-def", 123456), ("telegram-fixture-token", None), ("", None)])
+def test_bot_id_comes_from_the_token_prefix(webhook, token, bot_id):
+    assert webhook._bot_id(token) == bot_id

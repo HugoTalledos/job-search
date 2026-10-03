@@ -14,6 +14,7 @@ _LEVEL_ORDER = {"expert": 0, "advanced": 1, "intermediate": 2, "basic": 3}
 BOT_COMMANDS = [
     {"command": "build_profile", "description": "Construir mi perfil profesional"},
     {"command": "resend_pending", "description": "Reenviar propuestas pendientes"},
+    {"command": "ajustar_cv", "description": "Responde a una oferta para recibir un CV ajustado"},
 ]
 
 

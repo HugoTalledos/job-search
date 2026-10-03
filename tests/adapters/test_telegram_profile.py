@@ -60,6 +60,7 @@ def test_register_webhook_sets_secret_and_commands():
     assert [path for path, _ in calls] == ["/botTOKEN/setWebhook", "/botTOKEN/setMyCommands"]
     assert b'"secret_token":"s3cret"' in calls[0][1]
     assert b"build_profile" in calls[1][1] and b"resend_pending" in calls[1][1]
+    assert b'"command":"ajustar_cv"' in calls[1][1]
 
 
 def test_register_webhook_fails_loudly():

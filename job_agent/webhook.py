@@ -10,14 +10,18 @@ from fastapi import FastAPI
 from google.cloud import firestore
 
 from .adapters.code_repositories import GitRepositoryReader
-from .adapters.llm import LlmProfileInferer
+from .adapters.llm import LlmJobMatcher, LlmProfileInferer, LlmResumeTailor
 from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
+from .adapters.notifications.telegram_cv import TelegramCvDelivery
 from .adapters.persistence import FirestoreProfileStore
+from .adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
+from .adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
 from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessageIndex
 from .adapters.resume import FileResumeSource
-from .application import BuildProfessionalProfile, EnsureProfile
+from .adapters.resume.pdf_renderer import RequiredPdfRenderer
+from .application import BuildProfessionalProfile, EnsureProfile, GenerateTailoredCv
 from .bootstrap import build_llm
-from .config import Config, load_config, load_dotenv
+from .config import Config, load_config, load_dotenv, require_firebase_storage_bucket
 from .domain.models import RepoRef
 from .entrypoints.http import create_app
 from .entrypoints.telegram import add_telegram_webhook
@@ -48,6 +52,7 @@ def build_webhook_app() -> FastAPI:
     telegram_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
     if not telegram_secret.strip():
         raise ValueError("TELEGRAM_WEBHOOK_SECRET no está configurado")
+    storage_bucket = require_firebase_storage_bucket()
 
     cfg = load_config()
     threshold = cfg.matching.min_score_to_notify
@@ -75,9 +80,36 @@ def build_webhook_app() -> FastAPI:
         messenger=telegram,
         build_profile=build_profile_use_case(cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram)),
         resend_pending=ResendPendingNotifications(store, offer_notifier, offer_messages),
+        cv_generator=cv_generator_use_case(cfg, client, store, storage_bucket, telegram_token),
+        offer_messages=offer_messages,
         execution_lock=execution_lock,
+        bot_id=_bot_id(telegram_token),
     )
     return app
+
+
+def _bot_id(token: str) -> int | None:
+    """Telegram bot tokens start with the bot's user id (``123456:ABC...``)."""
+    prefix = token.strip().split(":", 1)[0]
+    return int(prefix) if prefix.isascii() and prefix.isdigit() else None
+
+
+def cv_generator_use_case(
+    cfg: Config, client: firestore.Client, profiles: FirestoreScoringStore, bucket: str, telegram_token: str
+) -> GenerateTailoredCv:
+    tracking = FirestoreCvTrackingStore(client)
+    models: dict = {}
+    return GenerateTailoredCv(
+        resume=FileResumeSource(cfg.resume_file),
+        profile_reader=profiles,
+        posting_reader=tracking,
+        matcher=LlmJobMatcher(build_llm(cfg.llm, "match", models)),
+        tailor=LlmResumeTailor(build_llm(cfg.llm, "tailor", models)),
+        renderer=RequiredPdfRenderer(),
+        tracking=tracking,
+        artifacts=FirebaseCvArtifactStore(bucket),
+        delivery=TelegramCvDelivery(telegram_token),
+    )
 
 
 def build_profile_use_case(
