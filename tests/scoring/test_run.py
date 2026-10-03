@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from job_agent.scoring.models import PendingPosting, PostingEnrichment, ScoreResult
+from job_agent.scoring.models import PendingPosting, PostingEnrichment, ScoreResult, TelegramMessageRef
 from job_agent.scoring.run import ResendPendingNotifications, ScorePendingJobs
 from job_agent.scoring.models import PendingNotification
 
@@ -86,10 +86,23 @@ class Notifier:
         self.events.append(f"notify:{job.external_id}:{result.score}:{enrichment.required_language}")
         if self.fail:
             raise RuntimeError("Telegram unavailable")
+        return TelegramMessageRef("42", 91)
 
 
-def make_run(profile, postings, scorer, enricher, notifier, threshold=70):
-    return ScorePendingJobs(Profiles(profile, postings.events), postings, scorer, enricher, notifier, threshold)
+class MessageIndex:
+    def __init__(self, events):
+        self.events = events
+        self.fail_for = set()
+
+    def record(self, ref, posting_id):
+        self.events.append(f"record:{ref.chat_id}:{ref.message_id}:{posting_id}")
+        if posting_id in self.fail_for:
+            raise RuntimeError("index unavailable")
+
+
+def make_run(profile, postings, scorer, enricher, notifier, threshold=70, index=None):
+    return ScorePendingJobs(Profiles(profile, postings.events), postings, scorer, enricher, notifier,
+                            threshold, index or MessageIndex(postings.events))
 
 
 def test_empty_collection_does_no_enrichment_score_or_send(profile):
@@ -107,7 +120,7 @@ def test_high_score_persists_before_sending_and_confirms_notification(profile, j
 
     assert events == [
         "profile", "postings", "enrich:123", "enriched:original", "score:123",
-        "scored:original:True", "notify:123:83:English B2", "notified:original",
+        "scored:original:True", "notify:123:83:English B2", "record:42:91:original", "notified:original",
     ]
     assert postings.status["original"] == "NOTIFIED"
     assert (report.evaluated, report.failed, report.notified) == (1, 0, 1)
@@ -205,7 +218,7 @@ def test_input_failure_aborts_before_work(profile, source):
     postings = Postings([], events, RuntimeError("postings unavailable") if source == "postings" else None)
 
     with pytest.raises(RuntimeError, match="unavailable"):
-        ScorePendingJobs(profiles, postings, Scorer(events), Enricher(events), Notifier(events), 70).execute()
+        ScorePendingJobs(profiles, postings, Scorer(events), Enricher(events), Notifier(events), 70, MessageIndex(events)).execute()
 
     assert not any(event.startswith(("enrich:", "score:", "notify:")) for event in events)
 
@@ -231,10 +244,11 @@ def test_resend_uses_saved_result_and_enrichment_and_marks_only_successes(job):
             events.append(f"notify:{posting.external_id}:{result.score}:{enrichment.required_language}")
             if posting.external_id == "123":
                 raise RuntimeError("Telegram unavailable")
+            return TelegramMessageRef("42", 91)
 
-    report = ResendPendingNotifications(PendingStore(), FailingNotifier()).execute()
+    report = ResendPendingNotifications(PendingStore(), FailingNotifier(), MessageIndex(events)).execute()
 
-    assert events == ["list", "notify:123:83:English B2", "notify:124:83:None", "notified:second"]
+    assert events == ["list", "notify:123:83:English B2", "notify:124:83:None", "record:42:91:second", "notified:second"]
     assert (report.pending, report.notified, report.failed) == (2, 1, 1)
 
 
@@ -247,5 +261,68 @@ def test_resend_with_no_pending_notifications_does_not_send():
         def notify(self, *args):
             raise AssertionError("unexpected send")
 
-    report = ResendPendingNotifications(EmptyStore(), NoSend()).execute()
+    report = ResendPendingNotifications(EmptyStore(), NoSend(), MessageIndex([])).execute()
     assert (report.pending, report.notified, report.failed) == (0, 0, 0)
+
+
+def test_failed_message_record_keeps_pending_notification_and_continues(profile, job):
+    events = []
+    other = job.model_copy(update={"external_id": "124"})
+    postings = Postings([PendingPosting("first", job), PendingPosting("second", other)], events)
+    index = MessageIndex(events)
+    index.fail_for.add("first")
+
+    report = make_run(profile, postings, Scorer(events), Enricher(events), Notifier(events), index=index).execute()
+
+    assert postings.status == {"first": "PENDING_NOTIFICATION", "second": "NOTIFIED"}
+    assert "notified:first" not in events
+    assert events[-3:] == ["notify:124:83:English B2", "record:42:91:second", "notified:second"]
+    assert (report.evaluated, report.failed, report.notified) == (2, 1, 1)
+
+
+def test_resend_records_message_before_notified(job):
+    events = []
+    pending = PendingNotification("offer", job, RESULT, PostingEnrichment())
+
+    class Store:
+        status = "PENDING_NOTIFICATION"
+
+        def list_pending_notifications(self):
+            return [pending]
+
+        def mark_notified(self, document_id):
+            events.append(f"notified:{document_id}")
+            self.status = "NOTIFIED"
+
+    class Sender:
+        def notify(self, job, result, enrichment):
+            events.append("send:offer")
+            return TelegramMessageRef("42", 91)
+
+    store = Store()
+    report = ResendPendingNotifications(store, Sender(), MessageIndex(events)).execute()
+    assert events == ["send:offer", "record:42:91:offer", "notified:offer"]
+    assert store.status == "NOTIFIED"
+    assert (report.pending, report.notified, report.failed) == (1, 1, 0)
+
+
+def test_failed_resend_record_leaves_pending_notification(job):
+    events = []
+    pending = PendingNotification("offer", job, RESULT, PostingEnrichment())
+
+    class Store:
+        status = "PENDING_NOTIFICATION"
+
+        def list_pending_notifications(self):
+            return [pending]
+
+        def mark_notified(self, document_id):
+            self.status = "NOTIFIED"
+
+    store = Store()
+    index = MessageIndex(events)
+    index.fail_for.add("offer")
+    report = ResendPendingNotifications(store, Notifier(events), index).execute()
+    assert events == ["notify:123:83:None", "record:42:91:offer"]
+    assert store.status == "PENDING_NOTIFICATION"
+    assert (report.pending, report.notified, report.failed) == (1, 0, 1)

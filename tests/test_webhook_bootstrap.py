@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from google.cloud import firestore
 
 from job_agent.config import Config, MatchingConfig
-from job_agent.scoring.models import PostingEnrichment, ScoreResult
+from job_agent.scoring.models import PostingEnrichment, ScoreResult, TelegramMessageRef
 
 
 class Snapshot:
@@ -125,6 +125,7 @@ def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch,
     class FakeNotifier:
         def notify(self, posting, result, enrichment):
             notified.append((posting, result.score, enrichment.required_language))
+            return TelegramMessageRef("42", 91)
 
     monkeypatch.setattr(webhook, "JevOfferEnricher", lambda api_key: FakeEnricher(), raising=False)
     monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: FakeNotifier(), raising=False)
@@ -140,6 +141,7 @@ def test_webhook_wires_firestore_and_jev_without_rescoring(webhook, monkeypatch,
     assert scored == [(profile, job)]
     assert enriched == [job]
     assert notified == [(job, 80, "English B2")]
+    assert client.docs["telegram_offer_messages/42_91"]["posting_id"] == "original"
     assert client.docs["job_postings/original"]["status"] == "NOTIFIED"
     assert client.docs["job_postings/original"]["score"] == 80
     assert client.docs["job_postings/original"]["required_language"] == "English B2"
@@ -155,7 +157,7 @@ def test_webhook_uses_configured_notification_threshold(webhook, monkeypatch, pr
     monkeypatch.setattr(webhook, "JevOfferEnricher", lambda key: type("Enricher", (), {"enrich": lambda self, job: PostingEnrichment()})(), raising=False)
     monkeypatch.setattr(webhook, "JevScoringTool", lambda key: type("Scorer", (), {"score": lambda self, profile, job: ScoreResult(80, 0.8, "typesafe/jev-1.13")})())
     sent = []
-    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: type("Notifier", (), {"notify": lambda self, *args: sent.append(args)})(), raising=False)
+    monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: type("Notifier", (), {"notify": lambda self, *args: sent.append(args) or TelegramMessageRef("42", 91)})(), raising=False)
 
     response = TestClient(webhook.build_webhook_app()).post("/webhooks/inference", headers={"X-API-Key": "fixture-key"})
 
@@ -230,6 +232,7 @@ def test_telegram_resends_saved_pending_notifications_without_rescoring(webhook,
             sent.append((result.score, enrichment.required_language))
             if len(sent) == 2:
                 raise RuntimeError("Telegram unavailable")
+            return TelegramMessageRef("42", 92)
 
     monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: FakeOfferNotifier())
 
@@ -244,6 +247,7 @@ def test_telegram_resends_saved_pending_notifications_without_rescoring(webhook,
         "Reenvío terminado: 1 notificadas, 1 fallidas.",
     ]
     assert sent == [(83, "English B2"), (83, "English B2")]
+    assert client.docs["telegram_offer_messages/42_92"]["posting_id"] == "success"
     assert client.docs["job_postings/success"]["status"] == "NOTIFIED"
     assert client.docs["job_postings/failure"]["status"] == "PENDING_NOTIFICATION"
     assert client.docs["job_postings/unscored"]["status"] == "PENDING"
@@ -266,6 +270,7 @@ def test_resend_waits_for_an_active_scoring_run(webhook, monkeypatch, profile, j
             sent.append(args)
             started.set()
             release.wait(timeout=3)
+            return TelegramMessageRef("42", 91)
 
     monkeypatch.setattr(webhook, "TelegramOfferNotifier", lambda token, chat_id: BlockingNotifier())
     messages = []

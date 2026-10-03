@@ -6,7 +6,7 @@ from job_contracts import JobPosting
 
 from job_agent.domain.models import Profile
 
-from .models import PendingNotification, PendingPosting, PostingEnrichment, ScoreResult
+from .models import PendingNotification, PendingPosting, PostingEnrichment, ScoreResult, TelegramMessageRef
 
 
 class ProfileReader(Protocol):
@@ -40,4 +40,12 @@ class OfferEnricher(Protocol):
 
 
 class OfferNotifier(Protocol):
-    def notify(self, job: JobPosting, result: ScoreResult, enrichment: PostingEnrichment) -> None: ...
+    def notify(self, job: JobPosting, result: ScoreResult, enrichment: PostingEnrichment) -> TelegramMessageRef: ...
+
+
+class OfferMessageIndex(Protocol):
+    def record(self, ref: TelegramMessageRef, posting_id: str) -> None: ...
+
+    def resolve(self, chat_id: str, message_id: int) -> str | None: ...
+
+    def resolve_unique_url(self, url: str) -> str | None: ...

@@ -31,3 +31,9 @@ class PendingNotification:
     job: JobPosting
     result: ScoreResult
     enrichment: PostingEnrichment
+
+
+@dataclass(frozen=True)
+class TelegramMessageRef:
+    chat_id: str
+    message_id: int

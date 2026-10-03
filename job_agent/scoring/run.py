@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .ports import (OfferEnricher, OfferNotifier, PendingNotificationStore, PendingPostingStore,
+from .ports import (OfferEnricher, OfferMessageIndex, OfferNotifier, PendingNotificationStore, PendingPostingStore,
                     ProfileReader, ScoringTool)
 
 log = logging.getLogger(__name__)
@@ -26,16 +26,19 @@ class ResendReport:
 
 
 class ResendPendingNotifications:
-    def __init__(self, postings: PendingNotificationStore, notifier: OfferNotifier) -> None:
+    def __init__(self, postings: PendingNotificationStore, notifier: OfferNotifier,
+                 offer_messages: OfferMessageIndex) -> None:
         self.postings = postings
         self.notifier = notifier
+        self.offer_messages = offer_messages
 
     def execute(self) -> ResendReport:
         pending = self.postings.list_pending_notifications()
         notified = failed = 0
         for posting in pending:
             try:
-                self.notifier.notify(posting.job, posting.result, posting.enrichment)
+                ref = self.notifier.notify(posting.job, posting.result, posting.enrichment)
+                self.offer_messages.record(ref, posting.document_id)
                 self.postings.mark_notified(posting.document_id)
                 notified += 1
             except Exception as exc:
@@ -53,12 +56,14 @@ class ScorePendingJobs:
         enricher: OfferEnricher,
         notifier: OfferNotifier,
         min_score_to_notify: int,
+        offer_messages: OfferMessageIndex,
     ) -> None:
         self.profile_reader = profile_reader
         self.postings = postings
         self.scorer = scorer
         self.enricher = enricher
         self.notifier = notifier
+        self.offer_messages = offer_messages
         self.min_score_to_notify = min_score_to_notify
 
     def execute(self) -> ScoreReport:
@@ -76,7 +81,8 @@ class ScorePendingJobs:
                 self.postings.mark_scored(posting.document_id, result, notify=should_notify)
                 evaluated += 1
                 if should_notify:
-                    self.notifier.notify(posting.job, result, enrichment)
+                    ref = self.notifier.notify(posting.job, result, enrichment)
+                    self.offer_messages.record(ref, posting.document_id)
                     self.postings.mark_notified(posting.document_id)
                     notified += 1
             except Exception as exc:

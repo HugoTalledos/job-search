@@ -8,7 +8,7 @@ import httpx
 
 from job_contracts import JobPosting
 
-from .models import PostingEnrichment, ScoreResult
+from .models import PostingEnrichment, ScoreResult, TelegramMessageRef
 
 
 def _escaped(value: str, budget: int) -> str:
@@ -49,7 +49,7 @@ class TelegramOfferNotifier:
         self.chat_id = chat_id
         self.client = client or httpx.Client(timeout=30)
 
-    def notify(self, job: JobPosting, result: ScoreResult, enrichment: PostingEnrichment) -> None:
+    def notify(self, job: JobPosting, result: ScoreResult, enrichment: PostingEnrichment) -> TelegramMessageRef:
         response = self.client.post(
             f"https://api.telegram.org/bot{self.token}/sendMessage",
             data={
@@ -61,5 +61,16 @@ class TelegramOfferNotifier:
         )
         if response.status_code != 200:
             raise RuntimeError(f"Telegram send failed (HTTP {response.status_code})")
-        if response.json().get("ok") is not True:
+        try:
+            payload = response.json()
+        except ValueError:
+            raise RuntimeError("Telegram returned malformed response") from None
+        if not isinstance(payload, dict):
+            raise RuntimeError("Telegram returned malformed response")
+        if payload.get("ok") is not True:
             raise RuntimeError("Telegram rejected message")
+        sent_message = payload.get("result")
+        message_id = sent_message.get("message_id") if isinstance(sent_message, dict) else None
+        if type(message_id) is not int or message_id <= 0:
+            raise RuntimeError("Telegram returned malformed message receipt")
+        return TelegramMessageRef(self.chat_id, message_id)

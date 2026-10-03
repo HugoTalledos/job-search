@@ -13,6 +13,7 @@ from .adapters.code_repositories import GitRepositoryReader
 from .adapters.llm import LlmProfileInferer
 from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
 from .adapters.persistence import FirestoreProfileStore
+from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessageIndex
 from .adapters.resume import FileResumeSource
 from .application import BuildProfessionalProfile, EnsureProfile
 from .bootstrap import build_llm
@@ -53,6 +54,7 @@ def build_webhook_app() -> FastAPI:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     client = firestore.Client(project=project)
     store = FirestoreScoringStore(client)
+    offer_messages = FirestoreOfferMessageIndex(client)
     execution_lock = Lock()
     offer_notifier = TelegramOfferNotifier(telegram_token, telegram_chat_id)
     runner = ScorePendingJobs(
@@ -62,6 +64,7 @@ def build_webhook_app() -> FastAPI:
         JevOfferEnricher(openrouter_key),
         offer_notifier,
         threshold,
+        offer_messages,
     )
     app = create_app(runner, api_key, execution_lock=execution_lock)
     telegram = TelegramNotifier(telegram_token, telegram_chat_id)
@@ -71,7 +74,7 @@ def build_webhook_app() -> FastAPI:
         chat_id=telegram_chat_id.strip(),
         messenger=telegram,
         build_profile=build_profile_use_case(cfg, FirestoreProfileStore(client), TelegramProfileReporter(telegram)),
-        resend_pending=ResendPendingNotifications(store, offer_notifier),
+        resend_pending=ResendPendingNotifications(store, offer_notifier, offer_messages),
         execution_lock=execution_lock,
     )
     return app
