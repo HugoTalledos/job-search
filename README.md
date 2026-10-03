@@ -2,15 +2,14 @@
 
 ## Webhook de entrada para la inferencia
 
-`job_agent` expone `POST /webhooks/inference` como punto de entrada del futuro agente remoto.
-En esta primera entrega, al recibir una petición válida lee todas las ofertas de `job_postings`
-en Cloud Firestore y responde `200` sin cuerpo. Todavía no ejecuta inferencia ni guarda resultados.
-Si la lectura falla, responde `500`; una API key ausente o incorrecta recibe `401` sin consultar
-Firestore.
+`job_agent` expone `POST /webhooks/inference` para iniciar la evaluación de ofertas en segundo
+plano. Una petición autorizada recibe `200` sin cuerpo cuando se programa el trabajo; ese código no
+confirma que la evaluación haya terminado. Una API key ausente o incorrecta recibe `401` sin iniciar
+trabajo.
 
-Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google y `JOB_AGENT_WEBHOOK_API_KEY` en el
-entorno (o en `.env` para una ejecución local). Instala las dependencias de `requirements.txt` y
-arranca el servicio desde la raíz del repositorio:
+Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY` y
+`OPENROUTER_API_KEY` en el entorno (o en `.env` para una ejecución local). Instala las dependencias
+de `requirements.txt` y arranca el servicio desde la raíz del repositorio:
 
 ```bash
 .venv/bin/python -m uvicorn job_agent.webhook:app --host 127.0.0.1 --port 8000
@@ -26,11 +25,26 @@ curl -i -X POST http://127.0.0.1:8000/webhooks/inference \
 Sustituye `<tu-api-key>` por la clave configurada. La respuesta correcta es `HTTP/1.1 200 OK`
 con cuerpo vacío. La clave no debe incluirse en la URL.
 
+Antes de notificar, guarda el perfil profesional en el documento Firestore `profiles/current`, con
+los campos de `Profile` (`full_name`, `headline`, `seniority`, `years_of_experience`, `summary`,
+`target_roles`, `search_keywords`, `skills`, `domains`, `languages`, `locations`,
+`notable_projects` y `strengths_missing_from_resume`). Cada elemento de `skills` tiene `name`,
+`level` y `evidence`. El servicio solo lee ese documento; no genera ni actualiza el perfil.
+
+Por cada documento `job_postings/{id}` con `status: "PENDING"`, el servicio compara el campo `job`
+con el perfil mediante Jev (`typesafe/jev-1.13`). También acepta como pendiente un documento antiguo
+sin `status`. Al obtener un resultado, actualiza el mismo documento con `status: "EVALUATED"`,
+`score` (entero de 0 a 100), `confidence` (0 a 1), `score_model` y `evaluated_at`. Conserva el campo
+`job`. Una oferta que falla sigue pendiente; vuelve a notificar el webhook para reintentarla. Las
+ofertas evaluadas no se puntúan de nuevo. Las ejecuciones se serializan dentro de cada instancia del
+servicio. El trabajo vive en el proceso: si este termina durante una evaluación, no hay recuperación
+automática ni cola persistente; vuelve a notificar para procesar los pendientes.
+
 ## Buscador local con Firestore
 
 El componente [`local_collector/`](local_collector/) corre en tu Mac, usa tu sesión de
-LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. El agente remoto que evaluará
-esas ofertas, enviará avisos por Telegram y generará CV al responder es una etapa posterior. El comando
+LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. La evaluación con Jev ya está
+disponible en el webhook; los avisos por Telegram y la generación de CV son etapas posteriores. El comando
 anterior `run` sigue disponible durante la transición. `job_contracts/` contiene los modelos de los
 documentos compartidos; el buscador tiene entrada, configuración y entorno Python propios.
 
@@ -58,7 +72,7 @@ Para preparar el buscador:
 
 La programación anterior se administra por separado con `--component legacy` (valor por defecto).
 Si ambas están activas, cada corrida espera a que termine la otra antes de usar LinkedIn. El buscador nuevo no envía notificaciones
-hasta que se implemente el agente remoto.
+por sí mismo; el webhook inicia la evaluación cuando recibe una petición.
 
 ```text
 local_collector/          # búsqueda local, LinkedIn MCP, Firestore y CLI

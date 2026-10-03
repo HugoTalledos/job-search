@@ -1,36 +1,40 @@
-"""HTTP entrypoint for a future inference run."""
+"""HTTP entrypoint that starts affinity scoring in the background."""
 
 from __future__ import annotations
 
 import hmac
 import logging
+from threading import Lock
 
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 
-from ..application.load_collected_jobs import LoadCollectedJobs
+from ..scoring.run import ScorePendingJobs
 
 log = logging.getLogger(__name__)
 
 
-def create_app(load_jobs: LoadCollectedJobs, api_key: str) -> FastAPI:
+def create_app(runner: ScorePendingJobs, api_key: str) -> FastAPI:
     if not api_key.strip():
         raise ValueError("JOB_AGENT_WEBHOOK_API_KEY no está configurada")
     expected_key = api_key.encode("utf-8")
+    run_lock = Lock()
 
     app = FastAPI()
 
+    def run_scoring() -> None:
+        with run_lock:
+            try:
+                runner.execute()
+            except Exception as exc:
+                log.error("No se pudo completar la evaluación (%s)", type(exc).__name__)
+
     @app.post("/webhooks/inference")
-    def start_inference(request: Request) -> Response:
+    def start_inference(request: Request, background_tasks: BackgroundTasks) -> Response:
         supplied_key = request.headers.get("X-API-Key", "").encode("latin-1")
         if not hmac.compare_digest(supplied_key, expected_key):
             return Response(status_code=401)
 
-        try:
-            load_jobs.execute()
-        except Exception as exc:
-            log.error("No se pudieron leer las ofertas de Firestore (%s)", type(exc).__name__)
-            return Response(status_code=500)
-
-        return Response(status_code=200)
+        background_tasks.add_task(run_scoring)
+        return Response(status_code=200, background=background_tasks)
 
     return app
