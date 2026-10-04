@@ -10,7 +10,7 @@ trabajo.
 Configura `FIRESTORE_PROJECT_ID`, las credenciales de Google, `JOB_AGENT_WEBHOOK_API_KEY`,
 `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET` y
 `FIREBASE_STORAGE_BUCKET` en el entorno (o en `.env` para una ejecución local). El servicio no arranca
-si falta alguna; el bucket se explica en [CV a medida desde Telegram](#cv-a-medida-desde-telegram-ajustar_cv).
+si falta alguna; el bucket se explica en [CV a medida desde Telegram](#cv-a-medida-desde-telegram-botón-ajustar-cv).
 Instala las dependencias
 de `requirements.txt` y arranca el servicio desde la raíz del repositorio:
 
@@ -44,8 +44,8 @@ También acepta como pendiente un documento antiguo sin `status`.
 
 Si el score queda bajo `matching.min_score_to_notify` de `config.yaml` (70 por defecto), cambia el
 estado a `EVALUATED`. Si alcanza el umbral, cambia a `PENDING_NOTIFICATION` y envía un mensaje a
-Telegram con cargo, empresa, ubicación, enlace y score; incluye idioma y rango salarial solo cuando
-están disponibles. Cuando Telegram confirma el envío, cambia a `NOTIFIED` y guarda `notified_at`.
+Telegram con cargo, empresa, ubicación, enlace y score, y el botón «📄 Ajustar CV»; incluye idioma y
+rango salarial solo cuando están disponibles. Cuando Telegram confirma el envío, cambia a `NOTIFIED` y guarda `notified_at`.
 Un fallo de enriquecimiento o score deja la oferta `PENDING`, lista para procesarse en una futura
 notificación normal al webhook. Un fallo de Telegram deja `PENDING_NOTIFICATION`: este webhook no
 reintenta esos envíos, que quedan para otro mecanismo. Conserva `job` y los metadatos del buscador.
@@ -74,7 +74,7 @@ del bot. Comandos disponibles:
 | `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
 | `/resend_pending` | Responde inmediatamente «Estoy buscando propuestas que hayan quedado pendientes de notificar». En segundo plano, busca ofertas con estado `PENDING_NOTIFICATION` y reenvía la notificación usando la puntuación y el enriquecimiento guardados. Marca `NOTIFIED` cada envío confirmado; los fallidos conservan `PENDING_NOTIFICATION`. Al terminar informa cuántas se notificaron y cuántas fallaron. |
 | `/preferencias` | Sin texto, muestra tus preferencias de búsqueda guardadas y cuántas búsquedas tiene el plan vigente (sin usar el LLM). Con texto (`/preferencias quiero Go y sin Acme`), responde «Revisando tus preferencias…», interpreta la petición con el LLM (tarea `preferences`), y muestra el cambio y las primeras búsquedas con los botones Aplicar y Cancelar. Nada cambia hasta pulsar Aplicar; al aplicar se guardan `settings/search_preferences` (versión + 1) y el plan `settings/search_plan` que lee el buscador. Las propuestas caducan a las 24 horas. |
-| `/ajustar_cv` (como respuesta a un mensaje de oferta del bot) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. |
+| Botón «📄 Ajustar CV» (bajo cada oferta) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. Para ofertas antiguas sin botón, responde a su mensaje con `/ajustar_cv` (ya no aparece en el menú). |
 
 Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos y los tipos de actualización (`message` y `callback_query`, necesario para los botones de `/preferencias`). Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
 
@@ -83,14 +83,20 @@ construyendo un perfil, el bot te lo indica y no inicia otro. Igual que la evalu
 construcciones se serializan dentro de cada instancia del servicio, sin cola persistente. El servicio
 necesita `git` instalado para leer los repositorios.
 
-### CV a medida desde Telegram (`/ajustar_cv`)
+### CV a medida desde Telegram (botón «Ajustar CV»)
 
-Cuando una oferta te interesa, **responde al mensaje de esa oferta** (mantén pulsado → Responder) con
-`/ajustar_cv`. El bot solo atiende el comando en el chat privado con `TELEGRAM_CHAT_ID` (el chat y el
-remitente deben ser ese mismo id; en grupos se ignora) y solo si respondes a un mensaje enviado por el bot.
+Cuando una oferta te interesa, **pulsa «📄 Ajustar CV»** bajo su mensaje. Telegram muestra un aviso breve
+(«Ajustando tu CV…», «Ya estoy ajustando este CV» o «No pude iniciar el ajuste») y el bot te escribe el
+detalle en el chat. Puedes volver a pulsarlo para pedir el CV otra vez. El bot solo atiende el botón en el
+chat privado con `TELEGRAM_CHAT_ID` (el chat y quien lo pulsa deben ser ese mismo id; en otro caso responde
+«Acción no válida» sin generar nada).
+
+Las ofertas enviadas antes de existir el botón no lo tienen: para ellas, **responde al mensaje de la
+oferta** (mantén pulsado → Responder) con `/ajustar_cv`. El comando sigue funcionando, solo en el mismo chat
+privado y solo si respondes a un mensaje enviado por el bot, pero ya no aparece en el menú.
 
 - **Identificación de la oferta.** Busca primero `telegram_offer_messages/{chat_id}_{message_id}` del
-  mensaje respondido. Para mensajes enviados antes de existir ese registro, usa únicamente el enlace
+  mensaje de la oferta. Para mensajes enviados antes de existir ese registro, usa únicamente el enlace
   «Ver publicación» del mensaje (entidad `text_link`) si coincide con exactamente un documento
   `job_postings` por `job.url`. Nunca deduce la oferta del título ni del texto. Si no hay una
   identificación única, el bot lo explica y no genera nada; un `/ajustar_cv` sin respuesta recibe
@@ -102,7 +108,7 @@ remitente deben ser ese mismo id; en grupos se ignora) y solo si respondes a un 
   CV (tarea `tailor`), lo renderiza a PDF y sube `cv.pdf`, `resume.md` y `README.md` (análisis,
   evidencia, brechas, cambios y huellas de las entradas) a `gs://<bucket>/cvs/{posting_id}/{version_id}/…`.
   Luego te envía el resumen y el PDF como respuesta al mensaje de la oferta. Si algo falla, recibes un
-  aviso genérico (sin contenido del CV ni de la oferta) y puedes repetir `/ajustar_cv`.
+  aviso genérico (sin contenido del CV ni de la oferta) y puedes volver a pulsar el botón.
 - **Versiones y seguimiento.** `application_tracking/{posting_id}` registra la oferta (etapa `CV_READY`
   cuando hay artefactos completos; **no** significa que te postulaste) y
   `application_tracking/{posting_id}/versions/{version_id}` guarda cada versión con sus estados de
@@ -129,7 +135,7 @@ remitente deben ser ese mismo id; en grupos se ignora) y solo si respondes a un 
 5. **CV base y modelo.** El archivo `resume_path` de `config.yaml` debe estar disponible para el
    servicio, y la clave del proveedor de `llm` (tareas `match` y `tailor`) configurada.
 6. **Menú del bot.** Vuelve a ejecutar `.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>`
-   para que `/ajustar_cv` aparezca en el menú de comandos.
+   para actualizar el menú de comandos (`/ajustar_cv` ya no aparece; las ofertas nuevas traen el botón).
 
 La generación no usa el bloqueo de la evaluación de ofertas: no la detiene ni cambia el estado
 `NOTIFIED` de la propuesta. No se garantiza una entrega exactamente única si Telegram acepta un envío

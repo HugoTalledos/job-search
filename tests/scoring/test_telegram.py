@@ -1,3 +1,4 @@
+import json
 import logging
 
 import httpx
@@ -31,6 +32,8 @@ def test_sends_required_and_optional_offer_details(job):
     assert body["chat_id"] == "42"
     assert body["parse_mode"] == "HTML"
     assert body["disable_web_page_preview"] == "true"
+    assert json.loads(body["reply_markup"]) == {
+        "inline_keyboard": [[{"text": "📄 Ajustar CV", "callback_data": "cv:adjust"}]]}
     message = body["text"]
     assert "Backend Engineer &lt;Python&gt;" in message
     assert "Acme &amp; Co" in message

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import html
+import json
 
 import httpx
 
 from job_contracts import JobPosting
 
-from .models import PostingEnrichment, ScoreResult, TelegramMessageRef
+from .models import ADJUST_CV_CALLBACK, PostingEnrichment, ScoreResult, TelegramMessageRef
+
+OFFER_KEYBOARD = json.dumps({"inline_keyboard": [[{"text": "📄 Ajustar CV", "callback_data": ADJUST_CV_CALLBACK}]]},
+                            ensure_ascii=False)
 
 
 def _escaped(value: str, budget: int) -> str:
@@ -57,6 +61,7 @@ class TelegramOfferNotifier:
                 "text": format_offer_message(job, result, enrichment),
                 "parse_mode": "HTML",
                 "disable_web_page_preview": "true",
+                "reply_markup": OFFER_KEYBOARD,
             },
         )
         if response.status_code != 200:

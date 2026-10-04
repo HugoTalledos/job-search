@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from job_agent.entrypoints.telegram import (
-    ALREADY_BUILDING, BUILDING, CV_ACCEPTED, CV_FAILED, CV_IN_PROGRESS, CV_NEEDS_REPLY, CV_NOT_STARTED,
-    CV_UNKNOWN_OFFER, HELP, RESENDING_PENDING, SECRET_HEADER, add_telegram_webhook,
+    ALREADY_BUILDING, BUILDING, CALLBACK_INVALID, CV_ACCEPTED, CV_BUTTON_ACCEPTED, CV_BUTTON_IN_PROGRESS,
+    CV_BUTTON_NOT_STARTED, CV_FAILED, CV_IN_PROGRESS, CV_NEEDS_REPLY, CV_NOT_STARTED, CV_UNKNOWN_OFFER, HELP,
+    RESENDING_PENDING, SECRET_HEADER, add_telegram_webhook,
 )
 from job_agent.scoring.run import ResendReport
 
@@ -310,14 +311,21 @@ def cv(job, profile, match, tailored):
             events.append("ack" if text == CV_ACCEPTED else "reply")
             sent.append(text)
 
+    answers = []
+
+    class ButtonChat(NoPreferences):
+        def answer(self, callback_id, text):
+            events.append("answer")
+            answers.append((callback_id, text))
+
     offers = OfferMessages()
     app = FastAPI()
     add_telegram_webhook(app, secret="hook-secret", chat_id="42", messenger=RecordingMessenger(),
                          build_profile=Builder(), resend_pending=Builder(), cv_generator=use_case,
                          offer_messages=offers, bot_id=BOT_ID,
-                         preferences=NoPreferences(), preferences_chat=NoPreferences())
+                         preferences=NoPreferences(), preferences_chat=ButtonChat())
     return SimpleNamespace(http=TestClient(app), events=events, sent=sent, state=state, offers=offers,
-                           use_case=use_case)
+                           use_case=use_case, answers=answers)
 
 
 @pytest.fixture
@@ -475,8 +483,119 @@ def test_background_failure_is_reported_without_details(cv, caplog, failing):
     assert "RuntimeError" in caplog.text
 
 
-def test_help_lists_the_cv_command():
-    assert "/ajustar_cv" in HELP
+def test_help_points_to_the_cv_button():
+    assert "Ajustar CV" in HELP and "/ajustar_cv" not in HELP
+
+
+# --- «Ajustar CV» button under each offer message ---
+
+def _cv_button(*, update_id=70, offer=OFFER_MESSAGE, chat=None, sender=42, callback_id="cb-cv", data="cv:adjust"):
+    message = {**offer, "chat": chat or offer["chat"]}
+    query = {"from": {"id": sender, "is_bot": False}, "data": data, "message": message}
+    if callback_id is not None:
+        query["id"] = callback_id
+    return {"update_id": update_id, "callback_query": query}
+
+
+def test_cv_button_acknowledges_answers_and_replies_with_the_pdf_to_the_offer(cv):
+    response = cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button())
+
+    assert response.status_code == 200
+    assert cv.sent == [CV_ACCEPTED]
+    assert cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
+    assert cv.events.index("ack") < cv.events.index("answer") < cv.events.index("match")
+    assert cv.state.pdf_calls == [("42", 91, b"%PDF-cv")]
+    assert cv.offers.url_lookups == []
+
+
+def test_cv_button_on_an_offer_whose_record_is_missing_uses_its_unique_link(cv):
+    legacy = _legacy_offer(_link("https://jobs.example/offer"))
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(offer=legacy))
+
+    assert cv.sent == [CV_ACCEPTED]
+    assert cv.state.pdf_calls == [("42", 80, b"%PDF-cv")]
+
+
+def test_cv_button_on_an_inaccessible_offer_message_uses_the_record(cv):
+    # Telegram sends only chat, message_id and date 0 for messages it can no longer deliver.
+    inaccessible = {"message_id": 91, "date": 0, "chat": {"id": 42, "type": "private"}}
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(offer=inaccessible))
+
+    assert cv.sent == [CV_ACCEPTED] and cv.state.pdf_calls == [("42", 91, b"%PDF-cv")]
+
+
+def test_cv_button_on_an_unidentifiable_offer_explains_without_work(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(offer=_legacy_offer()))
+
+    assert cv.sent == [CV_UNKNOWN_OFFER]
+    assert cv.answers == [("cb-cv", CV_BUTTON_NOT_STARTED)]
+    assert "match" not in cv.events
+
+
+def test_cv_button_pressed_twice_starts_one_generation(cv):
+    from datetime import datetime, timezone
+
+    assert cv.use_case.prepare("offer", datetime.now(timezone.utc)).action == "generate"
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(update_id=71))
+
+    assert cv.sent == [CV_IN_PROGRESS]
+    assert cv.answers == [("cb-cv", CV_BUTTON_IN_PROGRESS)]
+    assert "match" not in cv.events
+
+
+def test_repeated_cv_button_update_is_handled_once(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(update_id=72))
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(update_id=72))
+
+    assert cv.events.count("match") == 1 and cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
+
+
+def test_cv_button_with_missing_inputs_is_answered_and_reported(cv):
+    cv.state.profile = None
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button())
+
+    assert cv.sent == [CV_NOT_STARTED]
+    assert cv.answers == [("cb-cv", CV_BUTTON_NOT_STARTED)]
+    assert "match" not in cv.events
+
+
+def test_cv_button_background_failure_points_back_to_the_button(cv):
+    cv.state.fail = "tailor"
+
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button())
+
+    assert cv.sent == [CV_ACCEPTED, CV_FAILED]
+    assert "Ajustar CV" in CV_FAILED and "SECRET-CV-TEXT" not in "".join(cv.sent)
+
+
+@pytest.mark.parametrize("update", [
+    _cv_button(sender=7),
+    _cv_button(chat={"id": 42, "type": "group"}),
+    _cv_button(chat={"id": 99, "type": "private"}, sender=99),
+    _cv_button(offer={k: v for k, v in OFFER_MESSAGE.items() if k != "message_id"}),
+])
+def test_cv_button_outside_the_private_chat_does_no_work(cv, update):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=update)
+
+    assert cv.answers == [("cb-cv", CALLBACK_INVALID)]
+    assert cv.sent == [] and cv.events == ["answer"]
+
+
+def test_cv_button_without_callback_id_is_ignored(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(callback_id=None))
+
+    assert cv.answers == [] and cv.sent == [] and cv.events == []
+
+
+def test_cv_command_still_works_for_offers_without_button(cv):
+    cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_update(update_id=73))
+
+    assert cv.sent == [CV_ACCEPTED] and cv.answers == []
+    assert cv.state.pdf_calls == [("42", 91, b"%PDF-cv")]
 
 
 # --- /preferencias and its inline buttons ---

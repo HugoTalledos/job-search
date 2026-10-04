@@ -18,6 +18,7 @@ from ..application import GenerateTailoredCv
 from ..application.cv_models import PreparedCvRequest
 from ..application.manage_search_preferences import ManageSearchPreferences
 from ..application.preference_models import DraftResolution, PreferencesView, Proposal
+from ..scoring.models import ADJUST_CV_CALLBACK
 from ..scoring.ports import OfferMessageIndex
 
 log = logging.getLogger(__name__)
@@ -34,13 +35,14 @@ RESENDING_PENDING = "Estoy buscando propuestas que hayan quedado pendientes de n
 ALREADY_RESENDING = "Ya estoy reenviando las propuestas pendientes."
 HELP = ("Comandos disponibles:\n/build_profile — construir tu perfil profesional"
         "\n/resend_pending — reintentar las notificaciones pendientes"
-        "\n/ajustar_cv — responde con él a una oferta para recibir un CV ajustado"
+        "\n📄 Ajustar CV — botón bajo cada oferta para recibir un CV ajustado en PDF"
         "\n/preferencias — ver o cambiar el tipo de ofertas que busco")
 CV_ACCEPTED = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
 CV_IN_PROGRESS = "Ya estoy ajustando tu CV para esta propuesta; te enviaré el PDF al terminar."
-CV_NEEDS_REPLY = "Para ajustar tu CV, responde con /ajustar_cv al mensaje de la oferta que te interesa."
-CV_UNKNOWN_OFFER = ("No pude identificar la oferta de ese mensaje. Responde con /ajustar_cv directamente "
-                    "a un mensaje de oferta enviado por el bot.")
+CV_NEEDS_REPLY = ("Para ajustar tu CV, pulsa «📄 Ajustar CV» bajo la oferta que te interesa. En ofertas "
+                  "antiguas sin botón, responde a su mensaje con /ajustar_cv.")
+CV_UNKNOWN_OFFER = ("No pude identificar la oferta de ese mensaje. Usa el botón «📄 Ajustar CV» de un "
+                    "mensaje de oferta enviado por el bot.")
 CV_NOT_STARTED = ("No pude iniciar el ajuste de tu CV. Revisa que existan tu CV base, tu perfil profesional "
                   "y la descripción completa de la oferta.")
 PREFERENCES_REVIEWING = "Revisando tus preferencias…"
@@ -50,8 +52,12 @@ CALLBACK_INVALID = "Acción no válida"
 CALLBACK_FAILED = "No pude completar la acción"
 PLAN_REBUILD_FAILED = "Tu perfil se guardó, pero no pude actualizar el plan de búsqueda."
 PLAN_NO_KEYWORDS = "Tu perfil se guardó, pero no hay palabras clave para buscar; agrega alguna con /preferencias."
-CV_FAILED = ("No pude generar o enviar tu CV para esta propuesta. Puedes intentarlo de nuevo respondiendo "
-             "/ajustar_cv a la oferta.")
+CV_FAILED = ("No pude generar o enviar tu CV para esta propuesta. Puedes intentarlo de nuevo con el botón "
+             "«📄 Ajustar CV» de la oferta.")
+# Short ``answerCallbackQuery`` texts for the CV button; the chat message carries the details.
+CV_BUTTON_ACCEPTED = "Ajustando tu CV…"
+CV_BUTTON_IN_PROGRESS = "Ya estoy ajustando este CV"
+CV_BUTTON_NOT_STARTED = "No pude iniciar el ajuste"
 
 
 class ChatMessenger(Protocol):
@@ -129,8 +135,9 @@ def add_telegram_webhook(
 
     Only calls carrying ``secret`` (Telegram sends the one given to ``setWebhook``) are accepted, and only
     messages from ``chat_id`` are acted upon; anything else gets ``200`` so Telegram does not resend it.
-    ``/ajustar_cv`` is further restricted to the private chat with that user, as a reply to an offer
-    message sent by the bot (``bot_id``, when known). ``/preferencias`` and its inline buttons
+    A tailored CV is requested with the «Ajustar CV» button under an offer message, or with ``/ajustar_cv``
+    as a reply to an offer message sent by the bot (``bot_id``, when known) for offers sent without the
+    button; both only in the private chat with that user. ``/preferencias`` and its inline buttons
     (``callback_query``) are likewise restricted to the private chat with that user.
     """
     if not secret.strip():
@@ -204,11 +211,14 @@ def add_telegram_webhook(
         except Exception as exc:
             log.error("No se pudo responder al botón de Telegram (%s)", type(exc).__name__)
 
-    def handle_callback(query: dict) -> None:
+    def handle_callback(query: dict, background_tasks: BackgroundTasks) -> None:
         callback_id = query.get("id")
         callback_id = callback_id if isinstance(callback_id, str) and callback_id else None
         message = query.get("message")
         data = query.get("data")
+        if data == ADJUST_CV_CALLBACK:
+            handle_cv_button(callback_id, message, query.get("from"), background_tasks)
+            return
         match = PREFERENCE_CALLBACK.fullmatch(data) if isinstance(data, str) else None
         message_id = message.get("message_id") if isinstance(message, dict) else None
         if (callback_id is None or match is None or type(message_id) is not int
@@ -255,22 +265,61 @@ def add_telegram_webhook(
             except Exception as notify_exc:
                 log.error("No se pudo avisar del fallo del CV (%s)", type(notify_exc).__name__)
 
-    def offer_posting_id(replied: dict) -> str | None:
-        author = replied.get("from")
-        if not isinstance(author, dict) or author.get("is_bot") is not True:
-            return None
-        if bot_id is not None and author.get("id") != bot_id:
-            return None
-        message_id = replied.get("message_id")
+    def offer_posting_id(offer: dict) -> str | None:
+        message_id = offer.get("message_id")
         if type(message_id) is not int:
             return None
         posting_id = offer_messages.resolve(chat_id, message_id)
         if posting_id:
             return posting_id
-        urls = _text_link_urls(replied)  # offers sent before message tracking existed
+        urls = _text_link_urls(offer)  # offers sent before message tracking existed
         return offer_messages.resolve_unique_url(urls.pop()) if len(urls) == 1 else None
 
+    def sent_by_this_bot(message: dict) -> bool:
+        author = message.get("from")
+        if not isinstance(author, dict) or author.get("is_bot") is not True:
+            return False
+        return bot_id is None or author.get("id") == bot_id
+
+    def start_cv(offer: dict, background_tasks: BackgroundTasks) -> str:
+        """Claim and schedule the CV for an offer message; returns a short status for button presses."""
+        try:
+            posting_id = offer_posting_id(offer)
+            prepared = None if posting_id is None else cv_generator.prepare(posting_id, datetime.now(timezone.utc))
+        except Exception as exc:
+            log.error("No se pudo preparar el CV solicitado (%s)", type(exc).__name__)
+            messenger.send_text(CV_NOT_STARTED)
+            return CV_BUTTON_NOT_STARTED
+        if prepared is None:
+            messenger.send_text(CV_UNKNOWN_OFFER)
+            return CV_BUTTON_NOT_STARTED
+        if prepared.action == "in_progress":
+            messenger.send_text(CV_IN_PROGRESS)
+            return CV_BUTTON_IN_PROGRESS
+        try:
+            messenger.send_text(CV_ACCEPTED)
+        finally:
+            # The claim is already persisted: the work runs even if the acknowledgment fails.
+            background_tasks.add_task(run_cv, prepared, offer["message_id"])
+        return CV_BUTTON_ACCEPTED
+
+    def handle_cv_button(callback_id: str | None, message: Any, sender: Any,
+                         background_tasks: BackgroundTasks) -> None:
+        # Telegram only routes presses of this bot's own buttons, so the offer message is the bot's.
+        if (callback_id is None or not isinstance(message, dict)
+                or type(message.get("message_id")) is not int or not _is_private_from(message, sender, chat_id)):
+            log.warning("Ignoring an invalid CV button press")
+            if callback_id is not None:
+                answer(callback_id, CALLBACK_INVALID)
+            return
+        status = CV_BUTTON_NOT_STARTED
+        try:
+            status = start_cv(message, background_tasks)
+        finally:
+            answer(callback_id, status)
+
     def handle_adjust_cv(message: dict, background_tasks: BackgroundTasks) -> None:
+        """``/ajustar_cv`` as a reply, kept for offer messages sent before they carried the button."""
         sender = message.get("from")
         if (message["chat"].get("type") != "private" or not isinstance(sender, dict)
                 or str(sender.get("id")) != chat_id):
@@ -280,24 +329,10 @@ def add_telegram_webhook(
         if not isinstance(replied, dict):
             messenger.send_text(CV_NEEDS_REPLY)
             return
-        try:
-            posting_id = offer_posting_id(replied)
-            prepared = None if posting_id is None else cv_generator.prepare(posting_id, datetime.now(timezone.utc))
-        except Exception as exc:
-            log.error("No se pudo preparar el CV solicitado (%s)", type(exc).__name__)
-            messenger.send_text(CV_NOT_STARTED)
-            return
-        if prepared is None:
+        if not sent_by_this_bot(replied):
             messenger.send_text(CV_UNKNOWN_OFFER)
             return
-        if prepared.action == "in_progress":
-            messenger.send_text(CV_IN_PROGRESS)
-            return
-        try:
-            messenger.send_text(CV_ACCEPTED)
-        finally:
-            # The claim is already persisted: the work runs even if the acknowledgment fails.
-            background_tasks.add_task(run_cv, prepared, replied["message_id"])
+        start_cv(replied, background_tasks)
 
     def is_repeated(update_id: Any) -> bool:
         if not isinstance(update_id, int):
@@ -312,7 +347,7 @@ def add_telegram_webhook(
         query = update.get("callback_query")
         if isinstance(query, dict):
             if not is_repeated(update.get("update_id")):
-                handle_callback(query)
+                handle_callback(query, background_tasks)
             return
         message = update.get("message")
         if not isinstance(message, dict) or is_repeated(update.get("update_id")):

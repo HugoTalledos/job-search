@@ -33,6 +33,10 @@ class PendingNotification:
     enrichment: PostingEnrichment
 
 
+# ``callback_data`` of the button under each offer message that asks for a tailored CV.
+ADJUST_CV_CALLBACK = "cv:adjust"
+
+
 @dataclass(frozen=True)
 class TelegramMessageRef:
     chat_id: str

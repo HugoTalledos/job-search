@@ -8,7 +8,7 @@ servicio por HTTP cuando termina una corrida:
   `job_postings/{job_key}`. Al terminar llama a `POST /webhooks/inference` del servicio (si
   `JOB_AGENT_URL` está configurada) para que evalúe y notifique. No usa LLM ni Telegram.
 - **Servicio remoto** (`job_agent/`, FastAPI en Cloud Run): puntúa las ofertas con Jev, las notifica por
-  Telegram, y atiende los comandos del bot (`/build_profile`, `/resend_pending`, `/ajustar_cv`,
+  Telegram, y atiende los comandos del bot (`/build_profile`, `/resend_pending`, el botón «Ajustar CV»,
   `/preferencias`). `job_contracts/` contiene los modelos compartidos.
 
 Principio: **primero lo determinista, el LLM al final**. El plan de búsqueda y los filtros son código;
@@ -24,7 +24,7 @@ flowchart LR
     COL["local_collector<br/>(Mac, launchd)"]
     LI["LinkedIn (MCP)"]
 
-    TG -- "/preferencias, /build_profile,<br/>/ajustar_cv, botones" --> WH
+    TG -- "/preferencias, /build_profile,<br/>botones «Ajustar CV»<br/>y de preferencias" --> WH
     WH -- "settings/search_preferences<br/>settings/search_plan<br/>profiles/current" --> FS
     COL -- "lee settings/search_plan" --> FS
     COL --> LI
@@ -65,7 +65,7 @@ sequenceDiagram
     WH->>Jev: enriquecer (idioma, salario) y puntuar
     WH->>FS: guardar score, estado EVALUATED o NOTIFIED
     WH->>Yo: oferta si score ≥ matching.min_score_to_notify
-    Yo->>WH: /ajustar_cv (respuesta a la oferta)
+    Yo->>WH: botón «Ajustar CV» de la oferta
     WH->>Yo: resumen y PDF del CV ajustado
 ```
 
