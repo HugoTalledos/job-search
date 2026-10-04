@@ -120,3 +120,60 @@ def test_collector_drops_excluded_company_and_title_before_saving(job):
     report = CollectJobs(MemorySource(jobs, store), store).execute()
     assert [j.external_id for j in store.jobs.values()] == ["3"]
     assert (report.fetched, report.excluded, report.inserted) == (3, 2, 1)
+
+
+class RecordingTrigger:
+    def __init__(self, store=None, error=None):
+        self.store = store
+        self.error = error
+        self.calls = 0
+
+    def trigger(self):
+        self.calls += 1
+        if self.store is not None:
+            self.store.events.append(f"trigger after {len(self.store.jobs)} saved")
+        if self.error:
+            raise self.error
+
+
+def test_collector_triggers_inference_once_after_saving_postings(job):
+    store = MemoryStore(_plan())
+    trigger = RecordingTrigger(store)
+
+    report = CollectJobs(MemorySource([job], store), store, trigger).execute()
+
+    assert store.events == ["plan", "source", "trigger after 1 saved"]
+    assert trigger.calls == 1
+    assert report.inference_triggered and report.errors == []
+
+
+def test_collector_triggers_inference_without_new_postings_to_retry_pending(job):
+    store = MemoryStore(_plan())
+    store.jobs[job_key(job)] = job
+    trigger = RecordingTrigger()
+
+    report = CollectJobs(MemorySource([job], store), store, trigger).execute()
+
+    assert report.inserted == 0
+    assert trigger.calls == 1 and report.inference_triggered
+
+
+def test_collector_reports_inference_failure_without_losing_saved_postings(job):
+    store = MemoryStore(_plan())
+    trigger = RecordingTrigger(error=RuntimeError("el servicio respondió 503"))
+
+    report = CollectJobs(MemorySource([job], store), store, trigger).execute()
+
+    assert report.inserted == 1 and list(store.jobs) == [job_key(job)]
+    assert not report.inference_triggered
+    assert report.errors == ["inference webhook: el servicio respondió 503"]
+
+
+def test_collector_does_not_trigger_inference_without_search_plan(job):
+    store = MemoryStore(None)
+    trigger = RecordingTrigger()
+
+    with pytest.raises(ValueError):
+        CollectJobs(MemorySource([job], store), store, trigger).execute()
+
+    assert trigger.calls == 0

@@ -138,8 +138,9 @@ y Firestore falla antes de registrar su confirmación.
 ## Buscador local con Firestore
 
 El componente [`local_collector/`](local_collector/) corre en tu Mac, usa tu sesión de
-LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. La evaluación con Jev y los
-avisos por Telegram están disponibles en el webhook; la generación de CV es una etapa posterior. `job_contracts/` contiene los modelos de los
+LinkedIn mediante el MCP y guarda ofertas completas en Cloud Firestore. Al terminar cada corrida avisa al
+webhook del servicio, que evalúa las ofertas con Jev y envía los avisos por Telegram; la generación de
+CV es una etapa posterior. `job_contracts/` contiene los modelos de los
 documentos compartidos; el buscador tiene entrada, configuración y entorno Python propios.
 
 Para preparar el buscador:
@@ -148,6 +149,8 @@ Para preparar el buscador:
 2. Instala solo las dependencias del buscador con `scripts/macos/setup_collector.sh`. Conserva tu `.env` si ya existe; agrega
    `FIRESTORE_PROJECT_ID` y `GOOGLE_APPLICATION_CREDENTIALS` (ruta absoluta a un JSON de cuenta de
    servicio guardado fuera del repositorio). El buscador usa estas credenciales para acceder a Firestore.
+   Para que cada corrida pida la evaluación al servicio, agrega también `JOB_AGENT_URL` y
+   `JOB_AGENT_WEBHOOK_API_KEY` (ver más abajo).
 3. Ejecuta una búsqueda manual para comprobar la conexión y ver el resultado en `logs/collector-AAAA-MM-DD.log`:
    ```bash
    scripts/macos/run_collector.sh
@@ -180,7 +183,15 @@ git show 38f1609:config.yaml > /tmp/config-legacy.yaml
 
 Si `config.yaml` conserva claves antiguas bajo `search:`, se ignoran con una advertencia.
 
-El buscador no envía notificaciones por sí mismo; el webhook inicia la evaluación y el envío cuando recibe una petición.
+Al terminar cada corrida, el buscador llama a `POST <JOB_AGENT_URL>/webhooks/inference` con el
+encabezado `X-API-Key: <JOB_AGENT_WEBHOOK_API_KEY>`, de modo que las ofertas nuevas se evalúan y se
+notifican por Telegram sin pasos manuales. Lo hace aunque no haya ofertas nuevas, para que el servicio
+reintente las que quedaron `PENDING` en corridas anteriores. Agrega ambas variables al `.env` del Mac
+(`JOB_AGENT_URL` es la URL base HTTPS del servicio; HTTP solo se acepta en `localhost`). Si
+`JOB_AGENT_URL` está vacía, el buscador solo guarda las ofertas y lo advierte en el log. Si la llamada
+falla (servicio caído, `401` por clave incorrecta…), las ofertas quedan guardadas, el error aparece en
+`logs/collector-AAAA-MM-DD.log` y la corrida termina con código 1; la siguiente corrida vuelve a pedir
+la evaluación. Un `200` solo confirma que el servicio programó el trabajo, no que haya terminado.
 
 Si instalaste antes el job de launchd del flujo anterior (`job_agent run`), desinstálalo:
 

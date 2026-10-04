@@ -1,8 +1,11 @@
 # Buscador local
 
 Este componente consulta LinkedIn mediante la sesión MCP del Mac y crea ofertas nuevas en Cloud
-Firestore. Solo depende de `job_contracts`, el SDK de Firestore, MCP, PyYAML y Pydantic. No importa
-`job_agent` ni realiza evaluación, notificaciones o generación de CV.
+Firestore. Solo depende de `job_contracts`, el SDK de Firestore, MCP, httpx, PyYAML y Pydantic. No importa
+`job_agent` ni realiza evaluación, notificaciones o generación de CV: al terminar cada corrida llama a
+`POST <JOB_AGENT_URL>/webhooks/inference` (encabezado `X-API-Key: <JOB_AGENT_WEBHOOK_API_KEY>`) para que
+el servicio remoto evalúe y notifique. Sin `JOB_AGENT_URL` solo guarda las ofertas; un fallo de esa
+llamada se registra como error de la corrida (código de salida 1) sin perder las ofertas guardadas.
 
 Desde la raíz del repositorio:
 

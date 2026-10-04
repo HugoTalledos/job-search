@@ -1,10 +1,12 @@
 # Arquitectura
 
-El sistema tiene dos piezas que solo se comunican a través de Cloud Firestore:
+El sistema tiene dos piezas que se comunican a través de Cloud Firestore; el buscador además avisa al
+servicio por HTTP cuando termina una corrida:
 
 - **Buscador local** (`local_collector/`, en tu Mac): consulta LinkedIn con tu sesión MCP según el plan
   `settings/search_plan`, descarta lo ya visto y lo excluido, y escribe ofertas nuevas en
-  `job_postings/{job_key}`. No usa LLM ni Telegram.
+  `job_postings/{job_key}`. Al terminar llama a `POST /webhooks/inference` del servicio (si
+  `JOB_AGENT_URL` está configurada) para que evalúe y notifique. No usa LLM ni Telegram.
 - **Servicio remoto** (`job_agent/`, FastAPI en Cloud Run): puntúa las ofertas con Jev, las notifica por
   Telegram, y atiende los comandos del bot (`/build_profile`, `/resend_pending`, `/ajustar_cv`,
   `/preferencias`). `job_contracts/` contiene los modelos compartidos.

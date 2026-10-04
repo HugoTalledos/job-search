@@ -60,4 +60,5 @@ class CollectionReport(BaseModel):
     fetched: int = 0
     inserted: int = 0
     excluded: int = 0
+    inference_triggered: bool = False
     errors: list[str] = Field(default_factory=list)
