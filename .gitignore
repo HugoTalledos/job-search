@@ -13,3 +13,5 @@ logs/
 data/
 output/
 .run.lock
+credentials*.json
+.DS_Store
