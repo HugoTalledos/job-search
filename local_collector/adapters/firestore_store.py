@@ -21,12 +21,13 @@ class FirestoreCollectorStore:
             raise ValueError("No search plan in Firestore at settings/search_plan")
         return CollectorPlan.model_validate(snapshot.to_dict())
 
-    def known_keys(self, leads: list[JobLead]) -> set[str]:
+    def known_keys(self, leads: list[JobLead]) -> dict[str, str]:
         if not leads:
-            return set()
+            return {}
         collection = self.client.collection("job_postings")
         references = [collection.document(lead_key(lead)) for lead in leads]
-        return {snapshot.reference.id for snapshot in self.client.get_all(references) if snapshot.exists}
+        return {snapshot.reference.id: (snapshot.to_dict() or {}).get("status", "PENDING")
+                for snapshot in self.client.get_all(references) if snapshot.exists}
 
     def save(self, job: JobPosting) -> bool:
         document = self.client.collection("job_postings").document(job_key(job))

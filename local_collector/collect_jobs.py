@@ -20,10 +20,17 @@ class CollectJobs:
         self.inference = inference
 
     def execute(self) -> CollectionReport:
-        plan = self.store.load_plan()
-        batch = self.source.collect_new(plan.search, self.store.known_keys, plan.max_details_per_run)
+        self._report_status("started")
+        try:
+            plan = self.store.load_plan()
+            batch = self.source.collect_new(plan.search, self.store.known_keys, plan.max_details_per_run)
+        except Exception:
+            self._report_status("failed")
+            raise
         report = CollectionReport(
-            leads=batch.leads, known=batch.known, fetched=len(batch.jobs),
+            leads=batch.leads, known=batch.known, known_notified=batch.known_notified,
+            known_pending=batch.known_pending,
+            fetched=len(batch.jobs),
             errors=[*batch.search_errors, *batch.detail_errors],
         )
         for job in batch.jobs:
@@ -36,16 +43,26 @@ class CollectJobs:
             except Exception as exc:
                 report.errors.append(f"save {job.external_id}: {exc}")
                 log.exception("Could not save %s", job.external_id)
+        if report.errors:
+            self._report_status("issues")
         self._trigger_inference(report)
         log.info("Collector finished: %s", report.model_dump())
         return report
+
+    def _report_status(self, status: str) -> None:
+        if self.inference is None:
+            return
+        try:
+            self.inference.report_status(status)
+        except Exception as exc:
+            log.error("Could not report collector status (%s)", type(exc).__name__)
 
     def _trigger_inference(self, report: CollectionReport) -> None:
         """Wake the remote agent even without new postings, so earlier PENDING ones are retried."""
         if self.inference is None:
             return
         try:
-            self.inference.trigger()
+            self.inference.trigger(report)
             report.inference_triggered = True
         except Exception as exc:
             report.errors.append(f"inference webhook: {exc}")

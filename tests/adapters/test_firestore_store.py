@@ -80,11 +80,11 @@ def test_collector_never_writes_the_search_plan():
 def test_firestore_checks_only_requested_lead_documents_in_one_batch():
     client = FakeFirestore()
     leads = [JobLead(source="linkedin", external_id="101"), JobLead(source="linkedin", external_id="102")]
-    client.docs[f"job_postings/{lead_key(leads[0])}"] = {"source": "linkedin"}
+    client.docs[f"job_postings/{lead_key(leads[0])}"] = {"source": "linkedin", "status": "NOTIFIED"}
 
     known = FirestoreCollectorStore(client).known_keys(leads)
 
-    assert known == {lead_key(leads[0])}
+    assert known == {lead_key(leads[0]): "NOTIFIED"}
     assert client.read_batches == [[f"job_postings/{lead_key(lead)}" for lead in leads]]
 
 

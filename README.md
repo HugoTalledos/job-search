@@ -52,6 +52,11 @@ reintenta esos envíos, que quedan para otro mecanismo. Conserva `job` y los met
 Las ejecuciones se serializan dentro de cada instancia del servicio; no hay coordinación entre
 instancias ni cola persistente. El `200` del webhook no confirma la entrega del mensaje.
 
+Al terminar cada corrida, el bot resume cuántas ofertas se notificaron. Si no notificó ninguna,
+indica cuántas ya se habían notificado en búsquedas anteriores, cuántas se excluyeron por preferencias,
+cuántas quedaron bajo el umbral de afinidad con el perfil y cuántas fallaron. Una oferta conocida que
+todavía está `PENDING` no se cuenta como descartada: puede evaluarse en esa misma corrida.
+
 ## Control desde Telegram
 
 El mismo servicio expone `POST /webhooks/telegram`, al que Telegram envía los mensajes que le escribes
@@ -204,6 +209,11 @@ reintente las que quedaron `PENDING` en corridas anteriores. Agrega ambas variab
 falla (servicio caído, `401` por clave incorrecta…), las ofertas quedan guardadas, el error aparece en
 `logs/collector-AAAA-MM-DD.log` y la corrida termina con código 1; la siguiente corrida vuelve a pedir
 la evaluación. Un `200` solo confirma que el servicio programó el trabajo, no que haya terminado.
+
+Con el servicio configurado, Telegram avisa al comenzar la búsqueda, al comenzar la evaluación y al
+terminarla. El cierre indica cuántas ofertas se evaluaron y notificaron, incluso cuando no había ninguna
+pendiente. También avisa si la búsqueda terminó con errores o si una etapa falló; los detalles quedan en
+los registros del buscador o del servicio.
 
 Si instalaste antes el job de launchd del flujo anterior (`job_agent run`), desinstálalo:
 

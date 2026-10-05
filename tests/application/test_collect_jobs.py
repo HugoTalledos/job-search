@@ -19,7 +19,7 @@ class MemoryStore:
         return self.plan
 
     def known_keys(self, leads):
-        return {lead_key(lead) for lead in leads if lead_key(lead) in self.jobs}
+        return {lead_key(lead): "NOTIFIED" for lead in leads if lead_key(lead) in self.jobs}
 
     def save(self, job):
         if job.external_id == self.fail_on:
@@ -43,7 +43,9 @@ class MemorySource:
         known = known_keys(leads)
         fresh = [j for j in self.jobs if job_key(j) not in known][:max_details]
         self.fetched += [j.external_id for j in fresh]
-        return SourceCollection(jobs=fresh, leads=len(leads), known=len(known))
+        return SourceCollection(jobs=fresh, leads=len(leads), known=len(known),
+                                known_notified=sum(status == "NOTIFIED" for status in known.values()),
+                                known_pending=sum(status == "PENDING" for status in known.values()))
 
 
 class FailedSearchSource:
@@ -128,8 +130,13 @@ class RecordingTrigger:
         self.error = error
         self.calls = 0
 
-    def trigger(self):
+    def report_status(self, status):
+        if self.store is not None:
+            self.store.events.append(f"status {status}")
+
+    def trigger(self, report=None):
         self.calls += 1
+        self.report = report
         if self.store is not None:
             self.store.events.append(f"trigger after {len(self.store.jobs)} saved")
         if self.error:
@@ -142,7 +149,7 @@ def test_collector_triggers_inference_once_after_saving_postings(job):
 
     report = CollectJobs(MemorySource([job], store), store, trigger).execute()
 
-    assert store.events == ["plan", "source", "trigger after 1 saved"]
+    assert store.events == ["status started", "plan", "source", "trigger after 1 saved"]
     assert trigger.calls == 1
     assert report.inference_triggered and report.errors == []
 
@@ -155,6 +162,8 @@ def test_collector_triggers_inference_without_new_postings_to_retry_pending(job)
     report = CollectJobs(MemorySource([job], store), store, trigger).execute()
 
     assert report.inserted == 0
+    assert report.known_notified == 1
+    assert trigger.report.known_notified == 1
     assert trigger.calls == 1 and report.inference_triggered
 
 
@@ -171,9 +180,34 @@ def test_collector_reports_inference_failure_without_losing_saved_postings(job):
 
 def test_collector_does_not_trigger_inference_without_search_plan(job):
     store = MemoryStore(None)
-    trigger = RecordingTrigger()
+    trigger = RecordingTrigger(store)
 
     with pytest.raises(ValueError):
         CollectJobs(MemorySource([job], store), store, trigger).execute()
 
     assert trigger.calls == 0
+    assert store.events == ["status started", "plan", "status failed"]
+
+
+def test_collector_reports_fatal_search_failure_after_start():
+    store = MemoryStore(_plan())
+    trigger = RecordingTrigger(store)
+
+    class CrashingSource:
+        def collect_new(self, *args):
+            raise RuntimeError("MCP unavailable")
+
+    with pytest.raises(RuntimeError, match="MCP unavailable"):
+        CollectJobs(CrashingSource(), store, trigger).execute()
+
+    assert store.events == ["status started", "plan", "status failed"]
+
+
+def test_collector_reports_search_errors_before_inference():
+    store = MemoryStore(_plan())
+    trigger = RecordingTrigger(store)
+
+    report = CollectJobs(FailedSearchSource(), store, trigger).execute()
+
+    assert report.errors == ["boom: rate limited"]
+    assert store.events == ["status started", "plan", "status issues", "trigger after 0 saved"]

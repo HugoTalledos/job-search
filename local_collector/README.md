@@ -6,6 +6,10 @@ Firestore. Solo depende de `job_contracts`, el SDK de Firestore, MCP, httpx, PyY
 `POST <JOB_AGENT_URL>/webhooks/inference` (encabezado `X-API-Key: <JOB_AGENT_WEBHOOK_API_KEY>`) para que
 el servicio remoto evalúe y notifique. Sin `JOB_AGENT_URL` solo guarda las ofertas; un fallo de esa
 llamada se registra como error de la corrida (código de salida 1) sin perder las ofertas guardadas.
+Cuando el webhook está configurado, el buscador también avisa al servicio al iniciar la búsqueda y si
+encuentra errores. El servicio envía por Telegram estos estados y el resultado final de la evaluación,
+incluso cuando no hay ofertas pendientes. La llamada de inferencia incluye los conteos de ofertas
+conocidas ya notificadas y de ofertas excluidas para explicar por qué no se enviaron propuestas.
 
 Desde la raíz del repositorio:
 

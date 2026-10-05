@@ -134,6 +134,8 @@ def test_threshold_is_inclusive_and_low_offer_is_only_evaluated(profile, job):
 
     assert postings.status["low"] == "EVALUATED"
     assert report.notified == 0
+    assert report.below_threshold == 1
+    assert report.min_score_to_notify == 70
     assert not any(event.startswith("notify:") for event in events)
 
     events.clear()
@@ -142,6 +144,7 @@ def test_threshold_is_inclusive_and_low_offer_is_only_evaluated(profile, job):
     report = make_run(profile, postings, scorer, Enricher(events), Notifier(events)).execute()
     assert postings.status["equal"] == "NOTIFIED"
     assert report.notified == 1
+    assert report.below_threshold == 0
 
 
 def test_saved_empty_enrichment_skips_jev_extraction(profile, job):

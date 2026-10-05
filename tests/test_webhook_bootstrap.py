@@ -313,8 +313,9 @@ def test_resend_waits_for_an_active_scoring_run(webhook, monkeypatch, profile, j
         resend = pool.submit(http.post, "/webhooks/telegram",
                              headers={"X-Telegram-Bot-Api-Secret-Token": "telegram-secret"},
                              json={"update_id": 22, "message": {"chat": {"id": 42}, "text": "/resend_pending"}})
-        assert _wait_for_message(messages)
-        assert messages[0] == "Estoy buscando propuestas que hayan quedado pendientes de notificar"
+        resend_notice = "Estoy buscando propuestas que hayan quedado pendientes de notificar"
+        assert _wait_for_message(messages, resend_notice)
+        assert resend_notice in messages
         release.set()
         assert scoring.result(timeout=3).status_code == 200
         assert resend.result(timeout=3).status_code == 200
@@ -323,10 +324,10 @@ def test_resend_waits_for_an_active_scoring_run(webhook, monkeypatch, profile, j
     assert client.docs["job_postings/offer"]["status"] == "NOTIFIED"
 
 
-def _wait_for_message(messages):
+def _wait_for_message(messages, expected=None):
     import time
     for _ in range(100):
-        if messages:
+        if (expected in messages) if expected is not None else bool(messages):
             return True
         time.sleep(0.01)
     return False

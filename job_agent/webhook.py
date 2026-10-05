@@ -76,8 +76,8 @@ def build_webhook_app() -> FastAPI:
         threshold,
         offer_messages,
     )
-    app = create_app(runner, api_key, execution_lock=execution_lock)
     telegram = TelegramNotifier(telegram_token, telegram_chat_id)
+    app = create_app(runner, api_key, execution_lock=execution_lock, messenger=telegram)
     profiles = FirestoreProfileStore(client)
     settings = FirestoreSearchSettingsStore(client)
     add_telegram_webhook(

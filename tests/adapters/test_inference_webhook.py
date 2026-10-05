@@ -1,5 +1,8 @@
 import httpx
 import pytest
+import json
+
+from job_contracts.models import CollectionReport
 
 from local_collector.adapters.inference_webhook import InferenceWebhookTrigger
 from local_collector.bootstrap import build_inference_trigger
@@ -23,6 +26,35 @@ def test_trigger_posts_to_inference_path_with_api_key_header():
     assert str(request.url) == "https://agent.example.run.app/webhooks/inference"
     assert request.headers["X-API-Key"] == "KEY-123"
     assert "KEY-123" not in str(request.url)
+
+
+def test_trigger_sends_collection_reasons_with_inference_request():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    _trigger(handler).trigger(CollectionReport(known=3, known_notified=2, known_pending=1, excluded=1))
+
+    assert json.loads(requests[0].content) == {
+        "collection": {"known_notified": 2, "known_other": 0, "excluded": 1}
+    }
+
+
+def test_collector_status_posts_to_authenticated_status_endpoint():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    _trigger(handler).report_status("started")
+
+    [request] = requests
+    assert str(request.url) == "https://agent.example.run.app/webhooks/collection-status"
+    assert request.headers["X-API-Key"] == "KEY-123"
+    assert request.content == b'{"status":"started"}'
 
 
 def test_trigger_explains_rejected_api_key():

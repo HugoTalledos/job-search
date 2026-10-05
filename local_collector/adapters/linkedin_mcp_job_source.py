@@ -94,24 +94,26 @@ class LinkedInMcpJobSource:
         return asyncio.run(self._collect(plan, admit, max_details))
 
     def collect_new(
-        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], set[str]], max_details: int,
+        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], dict[str, str]], max_details: int,
     ) -> SourceCollection:
         return asyncio.run(self._collect_new(plan, known_keys, max_details))
 
     async def _collect_new(
-        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], set[str]], max_details: int,
+        self, plan: SearchPlan, known_keys: Callable[[list[JobLead]], dict[str, str]], max_details: int,
     ) -> SourceCollection:
         async with AsyncExitStack() as stack:
             session = await open_mcp_session(stack, self.server)
             ids, search_errors = await self._search_with_errors(session, plan)
             leads = [JobLead(source=self.name, external_id=job_id,
                              url=f"https://www.linkedin.com/jobs/view/{job_id}/") for job_id in ids]
-            known = known_keys(leads) if leads else set()
+            known = known_keys(leads) if leads else {}
             admitted = [lead for lead in leads if lead_key(lead) not in known][:max_details]
             log.info("[linkedin] %d unique ids, %d known, %d to fetch", len(leads), len(known), len(admitted))
             jobs, errors = await self._fetch_details(session, admitted)
             return SourceCollection(
                 jobs=jobs, leads=len(leads), known=len(known),
+                known_notified=sum(status == "NOTIFIED" for status in known.values()),
+                known_pending=sum(status == "PENDING" for status in known.values()),
                 search_errors=search_errors, detail_errors=errors,
             )
 

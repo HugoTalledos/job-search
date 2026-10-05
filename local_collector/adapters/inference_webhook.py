@@ -6,7 +6,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from job_contracts.models import CollectionReport
+
 INFERENCE_PATH = "/webhooks/inference"
+COLLECTION_STATUS_PATH = "/webhooks/collection-status"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -23,14 +26,28 @@ class InferenceWebhookTrigger:
         if not api_key.strip():
             raise ValueError("JOB_AGENT_WEBHOOK_API_KEY no está configurada")
         self.url = base_url + INFERENCE_PATH
+        self.status_url = base_url + COLLECTION_STATUS_PATH
         self.api_key = api_key.strip()
         self.client = client or httpx.Client(timeout=60)
 
-    def trigger(self) -> None:
+    def trigger(self, report: CollectionReport | None = None) -> None:
+        if report is None:
+            self._post(self.url)
+            return
+        self._post(self.url, json={"collection": {
+            "known_notified": report.known_notified,
+            "known_other": report.known - report.known_notified - report.known_pending,
+            "excluded": report.excluded,
+        }})
+
+    def report_status(self, status: str) -> None:
+        self._post(self.status_url, json={"status": status})
+
+    def _post(self, url: str, **kwargs) -> None:
         try:
-            response = self.client.post(self.url, headers={"X-API-Key": self.api_key})
+            response = self.client.post(url, headers={"X-API-Key": self.api_key}, **kwargs)
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"no se pudo contactar {self.url} ({type(exc).__name__})") from exc
+            raise RuntimeError(f"no se pudo contactar {url} ({type(exc).__name__})") from exc
         if response.status_code == 401:
             raise RuntimeError("el servicio rechazó JOB_AGENT_WEBHOOK_API_KEY (401)")
         if response.status_code != 200:

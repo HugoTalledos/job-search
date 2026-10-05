@@ -16,6 +16,8 @@ class ScoreReport:
     evaluated: int = 0
     failed: int = 0
     notified: int = 0
+    below_threshold: int = 0
+    min_score_to_notify: int | None = None
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ class ScorePendingJobs:
     def execute(self) -> ScoreReport:
         profile = self.profile_reader.load()
         pending = self.postings.list_pending()
-        evaluated = failed = notified = 0
+        evaluated = failed = notified = below_threshold = 0
         for posting in pending:
             try:
                 enrichment = posting.enrichment
@@ -80,6 +82,8 @@ class ScorePendingJobs:
                 should_notify = result.score >= self.min_score_to_notify
                 self.postings.mark_scored(posting.document_id, result, notify=should_notify)
                 evaluated += 1
+                if not should_notify:
+                    below_threshold += 1
                 if should_notify:
                     ref = self.notifier.notify(posting.job, result, enrichment)
                     self.offer_messages.record(ref, posting.document_id)
@@ -88,4 +92,5 @@ class ScorePendingJobs:
             except Exception as exc:
                 failed += 1
                 log.error("Failed to evaluate posting %s (%s)", posting.document_id, type(exc).__name__)
-        return ScoreReport(evaluated=evaluated, failed=failed, notified=notified)
+        return ScoreReport(evaluated=evaluated, failed=failed, notified=notified,
+                           below_threshold=below_threshold, min_score_to_notify=self.min_score_to_notify)

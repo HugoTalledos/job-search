@@ -40,6 +40,8 @@ class SourceCollection(BaseModel):
     jobs: list[JobPosting]
     leads: int
     known: int
+    known_notified: int = 0
+    known_pending: int = 0
     search_errors: list[str] = Field(default_factory=list)
     detail_errors: list[str] = Field(default_factory=list)
 
@@ -57,6 +59,8 @@ class CollectorPlan(BaseModel):
 class CollectionReport(BaseModel):
     leads: int = 0
     known: int = 0
+    known_notified: int = 0
+    known_pending: int = 0
     fetched: int = 0
     inserted: int = 0
     excluded: int = 0
