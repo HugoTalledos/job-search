@@ -76,6 +76,12 @@ del bot. Comandos disponibles:
 | `/preferencias` | Sin texto, muestra tus preferencias de búsqueda guardadas y cuántas búsquedas tiene el plan vigente (sin usar el LLM). Con texto (`/preferencias quiero Go y sin Acme`), responde «Revisando tus preferencias…», interpreta la petición con el LLM (tarea `preferences`), y muestra el cambio y las primeras búsquedas con los botones Aplicar y Cancelar. Nada cambia hasta pulsar Aplicar; al aplicar se guardan `settings/search_preferences` (versión + 1) y el plan `settings/search_plan` que lee el buscador. Las propuestas caducan a las 24 horas. |
 | Botón «📄 Ajustar CV» (bajo cada oferta) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. Para ofertas antiguas sin botón, responde a su mensaje con `/ajustar_cv` (ya no aparece en el menú). |
 
+El PDF del CV ajustado lleva el botón «✅ Apliqué». Al pulsarlo, el bot registra una copia de la oferta
+y la fecha en `applied_proposals/{posting_id}` y confirma la marca por Telegram. La marca se crea una
+sola vez por oferta, aunque vuelvas a pulsar el botón o generes otro CV. Generar el PDF no implica
+haber aplicado; la marca solo se guarda al pulsar el botón. Los PDF enviados antes de esta versión no
+tienen el botón.
+
 Si el webhook ya estaba registrado, vuelve a ejecutar `set-telegram-webhook` para actualizar el menú de comandos y los tipos de actualización (`message` y `callback_query`, necesario para los botones de `/preferencias`). Dentro de una instancia, el reenvío espera a que termine una evaluación en curso para evitar notificaciones duplicadas.
 
 Cualquier otro mensaje recibe la lista de comandos. Si escribes `/build-profile` mientras ya se está

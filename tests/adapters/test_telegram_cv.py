@@ -46,13 +46,27 @@ def test_pdf_is_uploaded_as_reply_with_filename_and_mime_type(make_delivery):
     def handler(request):
         requests.append(request)
         return httpx.Response(200, json={'ok': True, 'result': {'message_id': 73}})
-    assert make_delivery(handler).send_pdf('42', 91, b'%PDF-document') == 73
+    assert make_delivery(handler).send_pdf('42', 91, b'%PDF-document', 'offer') == 73
     request = requests[0]
     assert request.url.path == '/botTOKEN/sendDocument'
     body = request.content
     assert b'name="chat_id"\r\n\r\n42' in body
     assert b'name="reply_to_message_id"\r\n\r\n91' in body
     assert b'filename="cv.pdf"' in body and b'application/pdf' in body and b'%PDF-document' in body
+    assert b'name="reply_markup"' in body
+    assert b'applied:offer' in body
+    assert '✅ Apliqué'.encode() in body
+
+
+@pytest.mark.parametrize('posting_id', ['', '../offer', 'a' * 49])
+def test_pdf_rejects_invalid_button_posting_id_before_sending(make_delivery, posting_id):
+    requests = []
+    delivery = make_delivery(lambda request: requests.append(request) or httpx.Response(200))
+
+    with pytest.raises(ValueError, match='posting id'):
+        delivery.send_pdf('42', 91, b'%PDF-document', posting_id)
+
+    assert requests == []
 
 
 @pytest.mark.parametrize('method', ['send_summary', 'send_pdf'])
@@ -66,7 +80,8 @@ def test_pdf_is_uploaded_as_reply_with_filename_and_mime_type(make_delivery):
 def test_failure_or_unconfirmed_receipt_raises_safe_error(make_delivery, method, status, body):
     delivery = make_delivery(lambda request: httpx.Response(status, json=body))
     with pytest.raises(RuntimeError) as error:
-        getattr(delivery, method)('42', 91, 'private CV' if method == 'send_summary' else b'private CV')
+        args = ('42', 91, 'private CV') if method == 'send_summary' else ('42', 91, b'private CV', 'offer')
+        getattr(delivery, method)(*args)
     assert 'TOKEN' not in str(error.value) and 'private CV' not in str(error.value)
 
 
@@ -76,5 +91,6 @@ def test_network_failure_raises_safe_error(make_delivery, method):
         raise httpx.ConnectError('https://api.telegram.org/botTOKEN private CV', request=request)
     delivery = make_delivery(handler)
     with pytest.raises(RuntimeError) as error:
-        getattr(delivery, method)('42', 91, 'private CV' if method == 'send_summary' else b'private CV')
+        args = ('42', 91, 'private CV') if method == 'send_summary' else ('42', 91, b'private CV', 'offer')
+        getattr(delivery, method)(*args)
     assert 'TOKEN' not in str(error.value) and 'private CV' not in str(error.value)

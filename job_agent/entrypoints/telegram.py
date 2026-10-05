@@ -48,6 +48,7 @@ CV_NOT_STARTED = ("No pude iniciar el ajuste de tu CV. Revisa que existan tu CV 
 PREFERENCES_REVIEWING = "Revisando tus preferencias…"
 PREFERENCES_FAILED = "No pude revisar tus preferencias. Inténtalo de nuevo más tarde."
 PREFERENCE_CALLBACK = re.compile(r"pref:(apply|cancel):([0-9a-f]{32})")
+APPLIED_CALLBACK = re.compile(r"applied:([A-Za-z0-9_-]{1,48})")
 CALLBACK_INVALID = "Acción no válida"
 CALLBACK_FAILED = "No pude completar la acción"
 PLAN_REBUILD_FAILED = "Tu perfil se guardó, pero no pude actualizar el plan de búsqueda."
@@ -76,6 +77,10 @@ class PreferencesChat(Protocol):
     def resolved(self, message_id: int, resolution: DraftResolution) -> None: ...
 
     def answer(self, callback_id: str, text: str) -> None: ...
+
+
+class AppliedProposalStore(Protocol):
+    def mark_applied(self, posting_id: str) -> bool: ...
 
 
 def _callback_status(resolution: DraftResolution) -> str:
@@ -128,6 +133,7 @@ def add_telegram_webhook(
     offer_messages: OfferMessageIndex,
     preferences: ManageSearchPreferences,
     preferences_chat: PreferencesChat,
+    applied_proposals: AppliedProposalStore | None = None,
     execution_lock: LockType | None = None,
     bot_id: int | None = None,
 ) -> None:
@@ -219,6 +225,9 @@ def add_telegram_webhook(
         if data == ADJUST_CV_CALLBACK:
             handle_cv_button(callback_id, message, query.get("from"), background_tasks)
             return
+        if isinstance(data, str) and data.startswith("applied:"):
+            handle_applied_button(callback_id, message, query.get("from"), data)
+            return
         match = PREFERENCE_CALLBACK.fullmatch(data) if isinstance(data, str) else None
         message_id = message.get("message_id") if isinstance(message, dict) else None
         if (callback_id is None or match is None or type(message_id) is not int
@@ -239,6 +248,28 @@ def add_telegram_webhook(
             preferences_chat.resolved(message_id, resolution)
         except Exception as exc:
             log.error("No se pudo editar el mensaje de la propuesta %s (%s)", draft_id, type(exc).__name__)
+
+    def handle_applied_button(callback_id: str | None, message: Any, sender: Any, data: str) -> None:
+        match = APPLIED_CALLBACK.fullmatch(data)
+        if (callback_id is None or match is None or not _is_private_from(message, sender, chat_id)):
+            if callback_id is not None:
+                answer(callback_id, CALLBACK_INVALID)
+            return
+        try:
+            if applied_proposals is None:
+                raise RuntimeError("Applied proposal store is not configured")
+            created = applied_proposals.mark_applied(match.group(1))
+        except LookupError:
+            answer(callback_id, "Oferta no disponible")
+            notify("No encontré esa oferta para registrar la postulación.")
+        except Exception as exc:
+            log.error("No se pudo registrar la postulación (%s)", type(exc).__name__)
+            answer(callback_id, CALLBACK_FAILED)
+            notify("No pude registrar tu postulación. Inténtalo de nuevo.")
+        else:
+            answer(callback_id, "Postulación registrada" if created else "Ya estaba registrada")
+            notify("✅ Registré esta propuesta como aplicada." if created
+                   else "Esta propuesta ya estaba marcada como aplicada.")
 
     def run_resend() -> None:
         try:

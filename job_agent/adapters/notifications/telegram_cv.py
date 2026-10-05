@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 import httpx
 
 from .telegram_notifier import TELEGRAM_LIMIT
@@ -43,7 +46,13 @@ class TelegramCvDelivery:
             'text': _bounded_text(summary), 'disable_web_page_preview': True,
         }, timeout=30)
 
-    def send_pdf(self, chat_id: str, reply_to_message_id: int, pdf: bytes) -> int:
+    def send_pdf(self, chat_id: str, reply_to_message_id: int, pdf: bytes, posting_id: str) -> int:
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', posting_id):
+            raise ValueError('Invalid posting id for Telegram button')
+        keyboard = json.dumps({'inline_keyboard': [[
+            {'text': '✅ Apliqué', 'callback_data': f'applied:{posting_id}'},
+        ]]}, ensure_ascii=False)
         return self._send('sendDocument', data={
             'chat_id': chat_id, 'reply_to_message_id': str(reply_to_message_id),
+            'reply_markup': keyboard,
         }, files={'document': ('cv.pdf', pdf, 'application/pdf')}, timeout=60)

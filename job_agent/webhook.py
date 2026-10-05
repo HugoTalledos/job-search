@@ -19,6 +19,7 @@ from .adapters.notifications.telegram_preferences import TelegramPreferencesChat
 from .adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore
 from .adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
 from .adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
+from .adapters.persistence.firestore_applied_proposals import FirestoreAppliedProposals
 from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessageIndex
 from .adapters.resume import FileResumeSource
 from .adapters.resume.pdf_renderer import RequiredPdfRenderer
@@ -95,6 +96,7 @@ def build_webhook_app() -> FastAPI:
             interpreter=LlmPreferenceInterpreter(build_llm(cfg.llm, "preferences")),
         ),
         preferences_chat=TelegramPreferencesChat(telegram_token, telegram_chat_id.strip()),
+        applied_proposals=FirestoreAppliedProposals(client),
         execution_lock=execution_lock,
         bot_id=_bot_id(telegram_token),
     )

@@ -120,7 +120,7 @@ def test_generation_receives_complete_inputs_uploads_then_publishes_then_deliver
     ready = h.store.load_ready(request.key)
     assert ready.summary_message_id == 101 and ready.pdf_message_id == 102
     assert h.client.docs['application_tracking/offer']['stage'] == 'CV_READY'
-    assert h.calls['send_pdf'][0][0] == ('42', 91, h.state.pdf)
+    assert h.calls['send_pdf'][0][0] == ('42', 91, h.state.pdf, 'offer')
     summary = h.calls['send_summary'][0][0][2]
     assert h.state.job.title in summary and h.state.job.company in summary
     assert 'Python avanzado' in summary and 'Kubernetes' in summary and 'Brechas' in summary

@@ -155,7 +155,7 @@ class GenerateTailoredCv:
                 self.tracking.mark_summary_sent(key, message_id)
             if ready.pdf_message_id is None:
                 pdf = self.artifacts.read_pdf(ready.artifacts)
-                message_id = self.delivery.send_pdf(chat_id, reply_to_message_id, pdf)
+                message_id = self.delivery.send_pdf(chat_id, reply_to_message_id, pdf, key.posting_id)
                 self.tracking.mark_pdf_sent(key, message_id)
             elif ready.summary_message_id is not None and ready.delivery_status == 'FAILED':
                 # A receipt can commit despite a transport error observed by its caller.

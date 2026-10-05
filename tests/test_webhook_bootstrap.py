@@ -82,6 +82,31 @@ def test_webhook_requires_api_key_at_startup(webhook, monkeypatch):
         webhook.build_webhook_app()
 
 
+def test_applied_pdf_button_writes_distinct_collection(webhook, monkeypatch, job):
+    from tests.adapters.test_firestore_cv_tracking import Client
+
+    client = Client()
+    client.docs['job_postings/offer'] = {'job': job.model_dump(mode='json')}
+    monkeypatch.setattr(webhook.firestore, 'Client', lambda **kwargs: client)
+    messages, answers = [], []
+    monkeypatch.setattr(webhook.TelegramNotifier, 'send_text', lambda self, text: messages.append(text))
+    monkeypatch.setattr(webhook.TelegramPreferencesChat, 'answer',
+                        lambda self, callback_id, text: answers.append((callback_id, text)))
+    app = webhook.build_webhook_app()
+
+    response = TestClient(app).post('/webhooks/telegram',
+                                    headers={'X-Telegram-Bot-Api-Secret-Token': 'telegram-secret'},
+                                    json={'update_id': 100, 'callback_query': {
+                                        'id': 'cb-applied', 'data': 'applied:offer', 'from': {'id': 42},
+                                        'message': {'message_id': 73, 'chat': {'id': 42, 'type': 'private'}},
+                                    }})
+
+    assert response.status_code == 200
+    assert client.docs['applied_proposals/offer']['job'] == job.model_dump(mode='json')
+    assert answers == [('cb-applied', 'Postulación registrada')]
+    assert messages == ['✅ Registré esta propuesta como aplicada.']
+
+
 def test_webhook_requires_firestore_project_at_startup(webhook, monkeypatch):
     monkeypatch.delenv("FIRESTORE_PROJECT_ID")
 
@@ -340,8 +365,8 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
             delivered.append(("summary", chat_id, reply_to))
             return 301
 
-        def send_pdf(self, chat_id, reply_to, pdf):
-            delivered.append(("pdf", chat_id, reply_to, pdf))
+        def send_pdf(self, chat_id, reply_to, pdf, posting_id):
+            delivered.append(("pdf", chat_id, reply_to, pdf, posting_id))
             return 302
 
     monkeypatch.setattr(webhook, "TelegramCvDelivery", FakeDelivery)
@@ -361,7 +386,7 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
     ack = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
     assert messages == [ack, ack]
     assert llm_calls == ["match", "tailor"]
-    assert delivered.count(("pdf", "42", 91, b"%PDF-wired")) == 2
+    assert delivered.count(("pdf", "42", 91, b"%PDF-wired", "original")) == 2
     tracking = tracking_client.docs["application_tracking/original"]
     assert tracking["stage"] == "CV_READY"
 
