@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from job_contracts import CollectorPlan, SearchPlan, SearchPreferences, SearchQuery
-from job_contracts.normalize import normalize_company, normalize_keyword as _norm, normalize_title  # noqa: F401
+from job_contracts.normalize import normalize_keyword as _norm
 
 from .models import Profile, StoredProfile
 

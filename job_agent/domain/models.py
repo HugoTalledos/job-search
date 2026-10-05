@@ -10,9 +10,7 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from job_contracts.models import (
-    CollectionReport, CollectorPlan, JobLead, JobPosting, SearchPlan, SearchQuery, SourceCollection,
-)
+from job_contracts.models import JobPosting
 
 
 class Skill(BaseModel):

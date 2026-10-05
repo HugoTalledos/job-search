@@ -75,15 +75,6 @@ class PreferenceInterpreter(Protocol):
     def interpret(self, current: SearchPreferences, request: str) -> PreferenceEdit: ...
 
 
-# --- Job market ---------------------------------------------------------------------------------
-
-
-class CollectedPostingsRepository(Protocol):
-    """Offers stored by the local collector for later evaluation."""
-
-    def list_postings(self) -> list[JobPosting]: ...
-
-
 # --- Outputs -----------------------------------------------------------------------------------
 
 

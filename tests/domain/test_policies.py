@@ -8,7 +8,7 @@ from job_agent.domain.policies import (
 
 
 def test_normalisation():
-    from job_agent.domain.policies import normalize_company, normalize_title
+    from job_contracts.normalize import normalize_company, normalize_title
 
     assert normalize_company("Globant S.A.S.") == normalize_company("GLOBANT") == "globant"
     assert normalize_title("Sr. Backend Engineer (Remote)") == "senior back end engineer"
