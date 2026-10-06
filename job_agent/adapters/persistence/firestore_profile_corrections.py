@@ -43,17 +43,19 @@ class FirestoreProfileCorrections:
             return self.apply_in_transaction(transaction, operations, expected_version)
         return confirm(self.client.transaction())
 
-    def apply_in_transaction(self, transaction, operations: list[FactOperation], expected_version: int) -> CorrectionSet:
+    def prepare_in_transaction(self, transaction):
+        return (*self._read(transaction), self.profile.get(transaction=transaction).to_dict())
+
+    def apply_in_transaction(self, transaction, operations: list[FactOperation], expected_version: int, *, prepared=None) -> CorrectionSet:
         operations = [FactOperation.model_validate(op) for op in operations]
         payload = json.dumps([op.model_dump() for op in operations], sort_keys=True)
         request_id = sha256(f'{expected_version}:{payload}'.encode()).hexdigest()
-        data, ids, active = self._read(transaction)
+        data, ids, active, profile_data = prepared if prepared is not None else self.prepare_in_transaction(transaction)
         version = data.get('version', 0)
         if version != expected_version:
             if data.get('last_request_id') == request_id and version == expected_version + 1:
                 return CorrectionSet(version=version, operations=active)
             raise CorrectionVersionConflict('Confirmed facts changed; reload the proposal')
-        profile_data = self.profile.get(transaction=transaction).to_dict()
         if profile_data is None:
             raise ValueError('A profile is required before confirming facts')
         base = Profile.model_validate(profile_data.get('inferred_profile', profile_data))

@@ -6,7 +6,7 @@ import json
 from secrets import token_urlsafe
 from google.cloud import firestore
 from ...application.cv_models import CvVersionKey
-from ...application.cv_review_models import ApprovalResult, CvReview, CvRevision
+from ...application.cv_review_models import ApprovalResult, CvReview, CvRevision, CvEditProposal, ProposalResolution
 
 
 class StaleCvRevision(ValueError):
@@ -53,7 +53,7 @@ class FirestoreCvReviewStore:
             return self.publish_revision_in_transaction(transaction, review_id, expected_revision_id, markdown_uri, proposal_id)
         return publish(self.client.transaction())
 
-    def publish_revision_in_transaction(self, transaction, review_id, expected_revision_id, markdown_uri, proposal_id):
+    def prepare_revision_in_transaction(self, transaction, review_id, expected_revision_id, markdown_uri, proposal_id):
         parts = markdown_uri.split('/', 3)
         if len(parts) != 4 or parts[0] != 'gs:' or not parts[2] or not parts[3]:
             raise ValueError('Private uploaded Markdown URI required')
@@ -67,8 +67,13 @@ class FirestoreCvReviewStore:
         if revision_ref.get(transaction=transaction).exists:
             raise StaleCvRevision('An immutable revision cannot be republished')
         revision = CvRevision(revision_id, review_id, markdown_uri, proposal_id, datetime.now(timezone.utc))
+        return ref, data, revision_ref, revision
+
+    def publish_revision_in_transaction(self, transaction, review_id, expected_revision_id, markdown_uri, proposal_id, *, prepared=None):
+        ref, data, revision_ref, revision = prepared or self.prepare_revision_in_transaction(
+            transaction, review_id, expected_revision_id, markdown_uri, proposal_id)
         transaction.set(revision_ref, asdict(revision))
-        transaction.set(ref, {**data, 'active_revision_id': revision_id})
+        transaction.set(ref, {**data, 'active_revision_id': revision.revision_id})
         return revision
 
     def approve(self, review_id, revision_id, chat_id):
@@ -107,3 +112,52 @@ class FirestoreCvReviewStore:
         if not data:
             raise LookupError('Review revision is missing')
         return CvRevision(**data)
+
+    def save_proposal(self, review_id, expected_revision_id, expected_corrections_version, proposal):
+        proposal_id = token_urlsafe(12)
+        @firestore.transactional
+        def save(transaction):
+            ref = self.reviews.document(review_id)
+            data = ref.get(transaction=transaction).to_dict()
+            if not data or data['status'] != 'DRAFT' or data['active_revision_id'] != expected_revision_id:
+                raise StaleCvRevision('Draft changed; renew proposal')
+            transaction.set(ref.collection('proposals').document(proposal_id), {
+                'proposal': proposal.model_copy(update={'proposal_id': proposal_id}).model_dump(mode='json'),
+                'expected_revision_id': expected_revision_id,
+                'expected_corrections_version': expected_corrections_version, 'status': 'pending'})
+            return proposal_id
+        return save(self.client.transaction())
+
+    def load_proposal(self, review_id, proposal_id):
+        data = self.reviews.document(review_id).collection('proposals').document(proposal_id).get().to_dict()
+        if not data:
+            raise ValueError('Unknown proposal')
+        return ProposalResolution(data['status'], CvEditProposal.model_validate(data['proposal']),
+            data['expected_revision_id'], data['expected_corrections_version'])
+
+    def prepare_proposal_in_transaction(self, transaction, review_id, proposal_id):
+        ref = self.reviews.document(review_id)
+        review = ref.get(transaction=transaction).to_dict()
+        proposal_ref = ref.collection('proposals').document(proposal_id)
+        data = proposal_ref.get(transaction=transaction).to_dict()
+        if not review or not data or review['status'] != 'DRAFT' or data['status'] != 'pending' or review['active_revision_id'] != data['expected_revision_id']:
+            raise StaleCvRevision('Stale or resolved proposal; renew proposal')
+        return proposal_ref, data
+
+    def resolve_proposal_in_transaction(self, transaction, review_id, proposal_id, action, *, prepared=None):
+        if action not in {'confirm', 'reject'}:
+            raise ValueError('Unknown proposal action')
+        ref, data = prepared or self.prepare_proposal_in_transaction(transaction, review_id, proposal_id)
+        transaction.set(ref, {**data, 'status': action})
+        return ProposalResolution(action, CvEditProposal.model_validate(data['proposal']),
+            data['expected_revision_id'], data['expected_corrections_version'])
+
+    def cancel(self, review_id, chat_id):
+        @firestore.transactional
+        def cancel(transaction):
+            ref = self.reviews.document(review_id)
+            data = ref.get(transaction=transaction).to_dict()
+            if not data or data['chat_id'] != str(chat_id) or data['status'] != 'DRAFT':
+                raise ValueError('Unknown or inactive review')
+            transaction.set(ref, {**data, 'status': 'CANCELLED'})
+        cancel(self.client.transaction())

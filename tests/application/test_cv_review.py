@@ -108,3 +108,108 @@ def test_new_noncontradictory_correction_cannot_reuse_stale_ready_analysis(revie
     assert h.store.load_ready(second.key).match.reasons == ['Updated confirmed facts']
     assert h.store.load_ready(first.key).match.reasons != ['Updated confirmed facts']
     assert h.events.count('tailor') == 1
+
+
+def editing(h, markdown, replacements, facts=()):
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    from job_agent.adapters.persistence.firestore_profile_corrections import FirestoreProfileCorrections
+    h.client.collection('profiles').document('current').set(h.state.profile.model_dump())
+    h.service.corrections = FirestoreProfileCorrections(h.client)
+    h.service.interpreter = SimpleNamespace(propose=lambda *a: CvEditProposal(
+        replacements=[TextReplacement(old_text=a, new_text=b) for a,b in replacements],
+        fact_operations=list(facts), explanation='Cambio puntual'))
+    h.state.tailored = h.state.tailored.model_copy(update={'resume_markdown': markdown})
+    review = h.service.prepare('offer', '42', NOW)
+    revision = h.service.generate_draft(review.review_id, '42')
+    return review, revision
+
+
+def test_confirm_multiple_exact_style_replacements(review_harness):
+    h = review_harness
+    review, first = editing(h, '# CV\nOld headline\nOld skill', [('Old headline','New headline'), ('Old skill','New skill')])
+    proposal = h.service.propose_edit(review.review_id, '42', 'mejora redacción')
+    second = h.service.confirm_edit(review.review_id, proposal.proposal_id, '42')
+    assert h.use_case.artifacts.read_markdown(second.markdown_uri) == '# CV\nNew headline\nNew skill'
+    assert h.service.corrections.load().version == 0
+    with pytest.raises(ValueError):
+        h.service.confirm_edit(review.review_id, proposal.proposal_id, '42')
+    assert h.events.count('tailor') == 1
+
+
+@pytest.mark.parametrize('markdown,replacements', [('# CV\nEnglish B2',[('missing','')]),
+    ('# CV\nEnglish B2\nEnglish B2',[('English B2','')]), ('# CV\nEnglish B2',[('# CV\nEnglish B2','# Replacement')]),
+    ('# CV\nEnglish B2',[('English B2',''), ('B2','')])])
+def test_ambiguous_or_whole_document_edits_rejected(review_harness, markdown, replacements):
+    h = review_harness
+    review, first = editing(h, markdown, replacements)
+    with pytest.raises(ValueError):
+        h.service.propose_edit(review.review_id, '42', 'corregir')
+    assert h.reviews.load(review.review_id,'42').active_revision_id == first.revision_id
+
+
+def test_facts_atomic_with_revision_and_survive_cancel(review_harness):
+    h = review_harness
+    review, first = editing(h, '# CV\nEnglish B2\nPython', [('English B2\n','')], [FactOperation('remove_language','English')])
+    notices=[]
+    h.service.after_profile_change = lambda notify: notify('Recompilación pendiente')
+    h.service.notify = notices.append
+    proposal = h.service.propose_edit(review.review_id,'42','No hablo inglés')
+    revision = h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.use_case.artifacts.read_markdown(revision.markdown_uri) == '# CV\nPython'
+    assert h.service.corrections.load().version == 1
+    h.reviews.cancel(review.review_id, '42')
+    assert h.service.corrections.load().operations == [FactOperation('remove_language','English')]
+    assert notices == ['Recompilación pendiente']
+
+
+def test_rejected_and_stale_proposals_do_not_confirm_facts(review_harness):
+    h=review_harness
+    review, first=editing(h,'# CV\nEnglish B2\nPython',[('English B2\n','')],[FactOperation('remove_language','English')])
+    proposal=h.service.propose_edit(review.review_id,'42','No inglés')
+    h.service.reject_edit(review.review_id,proposal.proposal_id,'42')
+    with pytest.raises(ValueError): h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    proposal=h.service.propose_edit(review.review_id,'42','No inglés')
+    uri=h.use_case.artifacts.save_markdown(review.review_id,'anotherrevisionx','# Changed')
+    h.reviews.publish_revision(review.review_id,first.revision_id,uri,None)
+    with pytest.raises(ValueError): h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.service.corrections.load().version == 0
+
+
+@pytest.mark.parametrize('failure', ['facts', 'revision', 'resolution', 'upload'])
+def test_confirmation_failure_rolls_back_all_metadata(review_harness, monkeypatch, failure):
+    h=review_harness
+    review, first=editing(h,'# CV\nEnglish B2\nPython',[('English B2\n','')],[FactOperation('remove_language','English')])
+    proposal=h.service.propose_edit(review.review_id,'42','No inglés')
+    if failure == 'upload':
+        h.storage_client.fail_on='resume.md'
+    else:
+        obj, method = {'facts':(h.service.corrections,'apply_in_transaction'),
+            'revision':(h.reviews,'publish_revision_in_transaction'),
+            'resolution':(h.reviews,'resolve_proposal_in_transaction')}[failure]
+        original=getattr(obj,method)
+        def fail(*args,**kwargs):
+            original(*args,**kwargs)
+            raise RuntimeError('simulated midtransaction failure')
+        monkeypatch.setattr(obj,method,fail)
+    with pytest.raises(RuntimeError): h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.reviews.load(review.review_id,'42').active_revision_id == first.revision_id
+    assert h.service.corrections.load().version == 0
+    assert h.reviews.load_proposal(review.review_id,proposal.proposal_id).status == 'pending'
+
+
+def test_correction_version_conflict_and_failed_rebuild(review_harness):
+    h=review_harness
+    review, first=editing(h,'# CV\nEnglish B2\nPython',[('English B2\n','')],[FactOperation('remove_language','English')])
+    proposal=h.service.propose_edit(review.review_id,'42','No inglés')
+    h.service.corrections.confirm([FactOperation('deny_claim','Team leader')],0)
+    with pytest.raises(ValueError,match='facts changed'):
+        h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.reviews.load(review.review_id,'42').active_revision_id == first.revision_id
+    proposal=h.service.propose_edit(review.review_id,'42','No inglés')
+    notices=[]
+    h.service.notify=notices.append
+    def failed_hook(notify): raise RuntimeError('search plan unavailable')
+    h.service.after_profile_change=failed_hook
+    h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.service.corrections.load().version == 2
+    assert 'Corrección guardada' in notices[0]

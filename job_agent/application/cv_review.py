@@ -2,6 +2,8 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 from secrets import token_urlsafe
+from google.cloud import firestore
+from ..domain.cv_corrections import CorrectionSet
 
 from .cv_models import CvVersionKey, PreparedCvRequest
 from .generate_tailored_cv import _fingerprint
@@ -11,8 +13,11 @@ from ..domain.models import Profile, JobPosting, JobMatch, TailoredResume
 
 
 class CvReviewService:
-    def __init__(self, *, generation, reviews: CvReviewStore, corrections: ProfileCorrections):
+    def __init__(self, *, generation, reviews: CvReviewStore, corrections: ProfileCorrections, interpreter=None, after_profile_change=None, notify=None):
         self.generation, self.reviews, self.corrections = generation, reviews, corrections
+        self.interpreter = interpreter
+        self.after_profile_change = after_profile_change
+        self.notify = notify or (lambda message: None)
 
     def prepare(self, posting_id: str, chat_id: str, now: datetime):
         if now.tzinfo is None or now.utcoffset() is None:
@@ -90,3 +95,79 @@ class CvReviewService:
                                      datetime.fromisoformat(context['requested_at']), claim.attempt_id)
         return self.generation.execute(prepared, chat_id, reply_to_message_id, approved_match=match,
                                        approved_tailored=tailored, resend=False)
+
+    @staticmethod
+    def _replace(markdown, replacements):
+        if not replacements:
+            raise ValueError('Precisa el fragmento que deseas corregir')
+        spans = []
+        for item in replacements:
+            if item.old_text == markdown or markdown.count(item.old_text) != 1:
+                raise ValueError('Precisa un fragmento único; no se reemplaza todo el CV')
+            start = markdown.index(item.old_text)
+            spans.append((start, start + len(item.old_text), item.new_text))
+        spans.sort()
+        if any(a[1] > b[0] for a, b in zip(spans, spans[1:])):
+            raise ValueError('Los fragmentos se solapan; precisa el cambio')
+        if sum(end-start for start,end,_ in spans) == len(markdown):
+            raise ValueError('No se reemplaza todo el CV')
+        for start, end, text in reversed(spans):
+            markdown = markdown[:start] + text + markdown[end:]
+        return markdown
+
+    def propose_edit(self, review_id, chat_id, instruction):
+        review = self.reviews.load(review_id, chat_id)
+        if review.status != 'DRAFT' or not review.active_revision_id:
+            raise ValueError('No active draft')
+        revision = self.reviews.load_revision(review_id, review.active_revision_id, chat_id)
+        markdown = self.generation.artifacts.read_markdown(revision.markdown_uri)
+        corrections = self.corrections.load()
+        proposal = self.interpreter.propose(markdown, instruction, self.generation.profile_reader.load(), corrections)
+        updated = self._replace(markdown, proposal.replacements)
+        # Projection/revocation semantics are validated transactionally on confirmation.
+        self._validate(updated, CorrectionSet(version=corrections.version,
+            operations=corrections.operations + [op for op in proposal.fact_operations if op.kind != 'revoke']))
+        proposal_id = self.reviews.save_proposal(review_id, revision.revision_id, corrections.version, proposal)
+        return proposal.model_copy(update={'proposal_id': proposal_id})
+
+    def confirm_edit(self, review_id, proposal_id, chat_id):
+        self.reviews.load(review_id, chat_id)
+        resolution = self.reviews.load_proposal(review_id, proposal_id)
+        proposal = resolution.proposal
+        revision = self.reviews.load_revision(review_id, resolution.expected_revision_id, chat_id)
+        markdown = self.generation.artifacts.read_markdown(revision.markdown_uri)
+        updated = self._replace(markdown, proposal.replacements)
+        # Immutable upload is safe to orphan if the metadata transaction conflicts.
+        uri = self.generation.artifacts.save_markdown(review_id, token_urlsafe(12), updated)
+        @firestore.transactional
+        def confirm(transaction):
+            pending = self.reviews.prepare_proposal_in_transaction(transaction, review_id, proposal_id)
+            staged_revision = self.reviews.prepare_revision_in_transaction(transaction, review_id,
+                resolution.expected_revision_id, uri, proposal_id)
+            staged_facts = self.corrections.prepare_in_transaction(transaction)
+            current = CorrectionSet(version=staged_facts[0].get('version', 0), operations=staged_facts[2])
+            if current.version != resolution.expected_corrections_version:
+                raise ValueError('Confirmed facts changed; renew proposal')
+            # ALL adapter reads above precede ANY write below.
+            if proposal.fact_operations:
+                current = self.corrections.apply_in_transaction(transaction, proposal.fact_operations,
+                    resolution.expected_corrections_version, prepared=staged_facts)
+            self._validate(updated, current)
+            result = self.reviews.publish_revision_in_transaction(transaction, review_id,
+                resolution.expected_revision_id, uri, proposal_id, prepared=staged_revision)
+            self.reviews.resolve_proposal_in_transaction(transaction, review_id, proposal_id, 'confirm', prepared=pending)
+            return result
+        result = confirm(self.reviews.client.transaction())
+        if proposal.fact_operations and self.after_profile_change:
+            try:
+                self.after_profile_change(self.notify)
+            except Exception:
+                self.notify('Corrección guardada; no se pudo reconstruir el plan de búsqueda. Reintenta después.')
+        return result
+
+    def reject_edit(self, review_id, proposal_id, chat_id):
+        self.reviews.load(review_id, chat_id)
+        @firestore.transactional
+        def reject(transaction):
+            return self.reviews.resolve_proposal_in_transaction(transaction, review_id, proposal_id, 'reject')
+        return reject(self.reviews.client.transaction())
