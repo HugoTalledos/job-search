@@ -377,3 +377,42 @@ def test_find_ready_pdf_uses_receipt_and_old_buttonless_version(store, key, now,
     store.client.docs.pop('cv_pdf_messages/73',None)
     assert store.find_ready_by_pdf_message(73).artifacts == artifacts
     assert store.find_ready_by_pdf_message(999) is None
+
+
+def test_delivery_lease_excludes_competitor_expires_and_fences_old_worker(store,key,now,artifacts,match,tailored):
+    claim=store.claim(key,now)
+    store.mark_ready(key,artifacts,match,tailored,attempt_id=claim.attempt_id)
+    first=store.claim_delivery(key,now)
+    assert first.action=='deliver'
+    assert store.claim_delivery(key,now).action=='in_progress'
+    store.mark_summary_sent(key,71,delivery_attempt_id=first.attempt_id)
+    second=store.claim_delivery(key,now+timedelta(minutes=6))
+    assert second.action=='deliver' and second.attempt_id!=first.attempt_id
+    assert store.load_ready(key).summary_message_id==71
+    with pytest.raises(ValueError): store.renew_delivery(key,first.attempt_id,now+timedelta(minutes=6))
+    with pytest.raises(ValueError): store.mark_pdf_sent(key,72,delivery_attempt_id=first.attempt_id)
+    store.mark_delivery_failed(key,delivery_attempt_id=first.attempt_id)
+    assert store.claim_delivery(key,now+timedelta(minutes=6)).action=='in_progress'
+    store.mark_pdf_sent(key,73,delivery_attempt_id=second.attempt_id)
+    assert store.claim_delivery(key,now+timedelta(minutes=6)).action=='sent'
+
+
+def test_delivery_lease_is_transactional_for_concurrent_claims(store,client,key,now,artifacts,match,tailored):
+    claim=store.claim(key,now)
+    store.mark_ready(key,artifacts,match,tailored,attempt_id=claim.attempt_id)
+    client.barrier=Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims=list(pool.map(lambda _:store.claim_delivery(key,now),range(2)))
+    assert sorted(c.action for c in claims)==['deliver','in_progress']
+
+
+def test_explicit_resend_reserves_and_resets_receipts_atomically(store,key,now,artifacts,match,tailored):
+    claim=store.claim(key,now)
+    store.mark_ready(key,artifacts,match,tailored,attempt_id=claim.attempt_id)
+    store.mark_summary_sent(key,71)
+    store.mark_pdf_sent(key,72)
+    delivery=store.claim_delivery(key,now,resend=True)
+    assert delivery.action=='deliver'
+    ready=store.load_ready(key)
+    assert ready.summary_message_id is None and ready.pdf_message_id is None
+    assert store.claim_delivery(key,now,resend=True).action=='in_progress'

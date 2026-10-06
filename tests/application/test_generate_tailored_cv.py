@@ -37,7 +37,7 @@ def harness(job, profile, match, tailored):
         return run
 
     tracking = SimpleNamespace(**{name: operation(name, getattr(store, name)) for name in (
-        'claim', 'mark_ready', 'mark_failed', 'load_ready', 'begin_delivery',
+        'claim', 'mark_ready', 'mark_failed', 'load_ready', 'begin_delivery', 'claim_delivery', 'renew_delivery',
         'mark_summary_sent', 'mark_pdf_sent', 'mark_delivery_failed', 'find_ready_by_pdf_message',
     )})
     use_case = GenerateTailoredCv(
@@ -223,11 +223,11 @@ def test_pdf_failure_retry_reads_ready_artifacts_and_sends_only_pdf(harness):
     # Another failed retry must still persist delivery failure after reading the PDF.
     with pytest.raises(RuntimeError):
         h.use_case.execute(retry, '42', 91)
-    assert h.events == ['load_ready', 'read_pdf', 'send_pdf', 'mark_delivery_failed']
+    assert h.events == ['claim_delivery', 'load_ready', 'read_pdf', 'renew_delivery', 'send_pdf', 'mark_delivery_failed']
     h.state.fail = None
     h.events.clear()
     result = h.use_case.execute(retry, '42', 91)
-    assert h.events == ['load_ready', 'read_pdf', 'send_pdf', 'mark_pdf_sent']
+    assert h.events == ['claim_delivery', 'load_ready', 'read_pdf', 'renew_delivery', 'send_pdf', 'mark_pdf_sent']
     assert result.delivery_status == 'SENT'
 
 
@@ -240,7 +240,7 @@ def test_explicit_request_resends_both_and_failed_resend_retries_missing_pdf(har
     h.state.fail = 'send_pdf'
     with pytest.raises(RuntimeError):
         h.use_case.execute(retry, '42', 92)
-    assert 'begin_delivery' in h.events and 'send_summary' in h.events
+    assert 'claim_delivery' in h.events and 'send_summary' in h.events
     assert not {'match', 'tailor', 'render', 'upload'}.intersection(h.events)
     ready = h.store.load_ready(request.key)
     assert ready.summary_message_id == 101 and ready.pdf_message_id is None

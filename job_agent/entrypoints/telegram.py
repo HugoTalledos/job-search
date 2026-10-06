@@ -452,11 +452,9 @@ def add_telegram_webhook(
             if callback_id is not None:
                 answer(callback_id, CALLBACK_INVALID)
             return
-        status = CV_BUTTON_NOT_STARTED
-        try:
-            status = start_cv(message, background_tasks)
-        finally:
-            answer(callback_id, status)
+        # Acknowledge before any storage access or potentially slow chat notification.
+        answer(callback_id, CV_BUTTON_ACCEPTED)
+        start_cv(message, background_tasks)
 
     def handle_adjust_cv(message: dict, background_tasks: BackgroundTasks) -> None:
         """``/ajustar_cv`` as a reply, kept for offer messages sent before they carried the button."""

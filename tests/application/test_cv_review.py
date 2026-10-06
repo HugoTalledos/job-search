@@ -303,3 +303,41 @@ def test_failed_refreshed_analysis_is_immediately_retryable(review_harness):
     with pytest.raises(RuntimeError): h.service.approve(review.review_id,revision.revision_id,'42')
     h.state.fail=None
     assert h.service.approve(review.review_id,revision.revision_id,'42').delivery_status=='SENT'
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_overlapping_approvals_deliver_one_pdf_and_confirm_success(review_harness, retry):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    h=review_harness
+    review=h.service.prepare('offer','42',NOW)
+    revision=h.service.generate_draft(review.review_id,'42')
+    if retry:
+        h.state.fail='send_pdf'
+        with pytest.raises(RuntimeError): h.service.approve(review.review_id,revision.revision_id,'42')
+        h.state.fail=None
+    entered, release=Event(), Event()
+    original=h.use_case.delivery.send_pdf
+    successful=[]
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        receipt=original(*args,**kwargs)
+        successful.append(receipt)
+        return receipt
+    h.use_case.delivery.send_pdf=delayed
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(h.service.approve,review.review_id,revision.revision_id,'42')
+        assert entered.wait(3)
+        second=pool.submit(h.service.approve,review.review_id,revision.revision_id,'42')
+        try:
+            pending=second.result(timeout=1)
+            assert pending.delivery_status=='PENDING'
+        finally:
+            release.set()
+        result=first.result(timeout=3)
+    assert result.delivery_status=='SENT'
+    assert successful==[102]
+    assert h.store.load_ready(result.key).pdf_message_id==102
+    assert h.service.approve(review.review_id,revision.revision_id,'42').delivery_status=='SENT'
+    assert successful==[102]

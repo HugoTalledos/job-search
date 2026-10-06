@@ -10,7 +10,7 @@ from google.api_core.exceptions import FailedPrecondition
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from ...application.cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion, LegacyCvLookupUnavailable
+from ...application.cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion, LegacyCvLookupUnavailable, DeliveryClaim
 from ...domain.models import JobMatch, JobPosting, TailoredResume
 
 
@@ -146,6 +146,51 @@ class FirestoreCvTrackingStore:
         key = CvVersionKey(**{field: data[field] for field in CvVersionKey.__dataclass_fields__ if field in data})
         return self.load_ready(key)
 
+    def claim_delivery(self, key: CvVersionKey, now: datetime, *, resend: bool = False) -> DeliveryClaim:
+        """Reserve the whole summary/PDF delivery across workers, retaining confirmed receipts."""
+        version = self._version(key)
+        attempt_id = uuid4().hex
+
+        @firestore.transactional
+        def claim(transaction):
+            data = version.get(transaction=transaction).to_dict() or {}
+            if data.get('generation_status') != 'READY':
+                raise LookupError('CV version is not ready for delivery')
+            lease = data.get('delivery_lease_expires_at')
+            if data.get('delivery_attempt_id') and lease and lease > now:
+                return DeliveryClaim('in_progress')
+            if data.get('delivery_status') == 'SENT' and not resend:
+                return DeliveryClaim('sent')
+            changes = {
+                'delivery_attempt_id': attempt_id,
+                'delivery_lease_expires_at': now + timedelta(minutes=5),
+                'updated_at': now,
+            }
+            if data.get('delivery_status') == 'SENT' and resend:
+                changes.update(summary_message_id=None, pdf_message_id=None,
+                               summary_sent_at=None, pdf_sent_at=None, delivery_status='PENDING')
+            transaction.set(version, changes, merge=True)
+            return DeliveryClaim('deliver', attempt_id)
+
+        return claim(self.client.transaction())
+
+    def renew_delivery(self, key: CvVersionKey, attempt_id: str, now: datetime) -> None:
+        """Fence expired workers immediately before each bounded Telegram request."""
+        version = self._version(key)
+
+        @firestore.transactional
+        def renew(transaction):
+            data = version.get(transaction=transaction).to_dict() or {}
+            lease = data.get('delivery_lease_expires_at')
+            if (not attempt_id or data.get('delivery_attempt_id') != attempt_id
+                    or not lease or lease <= now):
+                raise ValueError('CV delivery claim is no longer active')
+            transaction.set(version, {
+                'delivery_lease_expires_at': now + timedelta(minutes=5), 'updated_at': now,
+            }, merge=True)
+
+        renew(self.client.transaction())
+
     def begin_delivery(self, key: CvVersionKey) -> None:
         """A fresh explicit resend must not mistake old receipts for new delivery."""
         version = self._version(key)
@@ -164,16 +209,16 @@ class FirestoreCvTrackingStore:
 
         begin(self.client.transaction())
 
-    def mark_summary_sent(self, key: CvVersionKey, message_id: int) -> None:
-        self._mark_delivery(key, 'summary_message_id', message_id)
+    def mark_summary_sent(self, key: CvVersionKey, message_id: int, *, delivery_attempt_id: str | None = None) -> None:
+        self._mark_delivery(key, 'summary_message_id', message_id, delivery_attempt_id=delivery_attempt_id)
 
-    def mark_pdf_sent(self, key: CvVersionKey, message_id: int) -> None:
-        self._mark_delivery(key, 'pdf_message_id', message_id)
+    def mark_pdf_sent(self, key: CvVersionKey, message_id: int, *, delivery_attempt_id: str | None = None) -> None:
+        self._mark_delivery(key, 'pdf_message_id', message_id, delivery_attempt_id=delivery_attempt_id)
 
-    def mark_delivery_failed(self, key: CvVersionKey) -> None:
-        self._mark_delivery(key)
+    def mark_delivery_failed(self, key: CvVersionKey, *, delivery_attempt_id: str | None = None) -> None:
+        self._mark_delivery(key, delivery_attempt_id=delivery_attempt_id)
 
-    def _mark_delivery(self, key: CvVersionKey, receipt: str | None = None, message_id: int | None = None) -> None:
+    def _mark_delivery(self, key: CvVersionKey, receipt: str | None = None, message_id: int | None = None, *, delivery_attempt_id: str | None = None) -> None:
         version = self._version(key)
 
         @firestore.transactional
@@ -181,6 +226,10 @@ class FirestoreCvTrackingStore:
             data = version.get(transaction=transaction).to_dict() or {}
             if data.get('generation_status') != 'READY':
                 raise LookupError('CV version is not ready for delivery')
+            if delivery_attempt_id is not None and data.get('delivery_attempt_id') != delivery_attempt_id:
+                if receipt is None:
+                    return  # A late failure must not release a newer worker's lease.
+                raise ValueError('CV delivery claim is no longer active')
             changes = {'updated_at': firestore.SERVER_TIMESTAMP}
             if receipt:
                 changes[receipt] = message_id
@@ -193,6 +242,8 @@ class FirestoreCvTrackingStore:
             else:
                 changes['delivery_status'] = 'FAILED'
                 changes['delivery_failed_at'] = firestore.SERVER_TIMESTAMP
+            if receipt is None or changes.get('delivery_status') == 'SENT':
+                changes.update(delivery_attempt_id=None, delivery_lease_expires_at=None)
             transaction.set(version, changes, merge=True)
             if receipt == 'pdf_message_id':
                 transaction.set(self.client.collection('cv_pdf_messages').document(str(message_id)), {'key': asdict(key)})

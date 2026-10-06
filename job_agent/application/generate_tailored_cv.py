@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..domain.models import JobMatch, JobPosting, TailoredResume
 from .cv_models import CvGenerationResult, CvVersionKey, PreparedCvRequest
@@ -144,26 +144,30 @@ class GenerateTailoredCv:
                 self.tracking.mark_failed(key, attempt_id=prepared.attempt_id)
                 raise
 
+        # Only one worker can deliver this version. Expired/crashed workers can be retried.
+        delivery_claim = self.tracking.claim_delivery(key, datetime.now(timezone.utc), resend=resend)
+        if delivery_claim.action != 'deliver':
+            return CvGenerationResult(key, 'READY', 'SENT' if delivery_claim.action == 'sent' else 'PENDING')
+        delivery_attempt_id = delivery_claim.attempt_id
         # A Telegram or download failure must never invalidate complete generation artifacts.
         try:
             ready = self.tracking.load_ready(key)
-            if ready.delivery_status == 'SENT' and resend:
-                self.tracking.begin_delivery(key)
-                ready = self.tracking.load_ready(key)
             if ready.summary_message_id is None:
+                self.tracking.renew_delivery(key, delivery_attempt_id, datetime.now(timezone.utc))
                 message_id = self.delivery.send_summary(
                     chat_id, reply_to_message_id, _summary(prepared.posting, ready.match, ready.tailored),
                 )
-                self.tracking.mark_summary_sent(key, message_id)
+                self.tracking.mark_summary_sent(key, message_id, delivery_attempt_id=delivery_attempt_id)
             if ready.pdf_message_id is None:
                 pdf = self.artifacts.read_pdf(ready.artifacts)
+                self.tracking.renew_delivery(key, delivery_attempt_id, datetime.now(timezone.utc))
                 kwargs = {'review_id': key.review_id} if key.review_id else {}
                 message_id = self.delivery.send_pdf(chat_id, reply_to_message_id, pdf, key.posting_id, **kwargs)
-                self.tracking.mark_pdf_sent(key, message_id)
+                self.tracking.mark_pdf_sent(key, message_id, delivery_attempt_id=delivery_attempt_id)
             elif ready.summary_message_id is not None and ready.delivery_status == 'FAILED':
                 # A receipt can commit despite a transport error observed by its caller.
-                self.tracking.mark_pdf_sent(key, ready.pdf_message_id)
+                self.tracking.mark_pdf_sent(key, ready.pdf_message_id, delivery_attempt_id=delivery_attempt_id)
         except Exception:
-            self.tracking.mark_delivery_failed(key)
+            self.tracking.mark_delivery_failed(key, delivery_attempt_id=delivery_attempt_id)
             raise
         return CvGenerationResult(key, 'READY', 'SENT')

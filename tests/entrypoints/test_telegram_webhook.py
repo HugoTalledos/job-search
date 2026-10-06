@@ -503,7 +503,7 @@ def test_cv_button_acknowledges_answers_and_replies_with_the_pdf_to_the_offer(cv
     assert response.status_code == 200
     assert cv.sent == [CV_ACCEPTED]
     assert cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
-    assert cv.events.index("ack") < cv.events.index("answer") < cv.events.index("match")
+    assert cv.events.index("answer") < cv.events.index("ack") < cv.events.index("match")
     assert cv.state.pdf_calls == [("42", 91, b"%PDF-cv", "offer")]
     assert cv.offers.url_lookups == []
 
@@ -609,7 +609,7 @@ def test_cv_button_on_an_unidentifiable_offer_explains_without_work(cv):
     cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(offer=_legacy_offer()))
 
     assert cv.sent == [CV_UNKNOWN_OFFER]
-    assert cv.answers == [("cb-cv", CV_BUTTON_NOT_STARTED)]
+    assert cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
     assert "match" not in cv.events
 
 
@@ -621,7 +621,7 @@ def test_cv_button_pressed_twice_starts_one_generation(cv):
     cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button(update_id=71))
 
     assert cv.sent == [CV_IN_PROGRESS]
-    assert cv.answers == [("cb-cv", CV_BUTTON_IN_PROGRESS)]
+    assert cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
     assert "match" not in cv.events
 
 
@@ -638,7 +638,7 @@ def test_cv_button_with_missing_inputs_is_answered_and_reported(cv):
     cv.http.post("/webhooks/telegram", headers=SECRET, json=_cv_button())
 
     assert cv.sent == [CV_NOT_STARTED]
-    assert cv.answers == [("cb-cv", CV_BUTTON_NOT_STARTED)]
+    assert cv.answers == [("cb-cv", CV_BUTTON_ACCEPTED)]
     assert "match" not in cv.events
 
 
@@ -1095,3 +1095,20 @@ def test_legacy_lookup_missing_index_explains_retry_without_changing_state(revie
     assert h.client.docs==before
     assert any('índice' in m and '/corregir_cv' in m for m in h.messenger.sent)
     assert not any('private backend' in m for m in h.messenger.sent)
+
+
+def test_adjust_button_answers_before_notification_or_review_work(review_webhook,monkeypatch):
+    from job_agent.scoring.models import ADJUST_CV_CALLBACK
+    h=review_webhook
+    def notify(text):
+        assert h.answers == [('callback',CV_BUTTON_ACCEPTED)]
+        h.messenger.sent.append(text)
+    monkeypatch.setattr(h.messenger,'send_text',notify)
+    h.post(data=ADJUST_CV_CALLBACK)
+    assert len(h.previews)==1
+    assert h.messenger.sent
+
+
+def test_legacy_adjust_button_answers_before_slow_notification(cv):
+    cv.http.post('/webhooks/telegram',headers=SECRET,json=_cv_button())
+    assert cv.events.index('answer') < cv.events.index('ack')

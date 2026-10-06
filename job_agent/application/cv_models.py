@@ -80,3 +80,9 @@ class ReadyCvVersion:
 
 class LegacyCvLookupUnavailable(RuntimeError):
     """The deployment has not enabled the historical PDF receipt lookup index."""
+
+
+@dataclass(frozen=True)
+class DeliveryClaim:
+    action: Literal['deliver', 'sent', 'in_progress']
+    attempt_id: str | None = None
