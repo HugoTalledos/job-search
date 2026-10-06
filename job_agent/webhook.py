@@ -24,6 +24,9 @@ from .adapters.persistence.firestore_offer_messages import FirestoreOfferMessage
 from .adapters.resume import FileResumeSource
 from .adapters.resume.pdf_renderer import RequiredPdfRenderer
 from .application import BuildProfessionalProfile, EnsureProfile, GenerateTailoredCv
+from .application.cv_review import CvReviewService
+from .adapters.persistence.firestore_cv_reviews import FirestoreCvReviewStore
+from .adapters.llm.cv_edit import CvEditInterpreter
 from .application.manage_search_preferences import ManageSearchPreferences
 from .bootstrap import build_llm
 from .config import Config, load_config, load_dotenv, require_firebase_storage_bucket
@@ -80,6 +83,17 @@ def build_webhook_app() -> FastAPI:
     app = create_app(runner, api_key, execution_lock=execution_lock, messenger=telegram)
     profiles = FirestoreProfileStore(client)
     settings = FirestoreSearchSettingsStore(client)
+    preferences = ManageSearchPreferences(
+        store=settings, profiles=profiles, budgets=cfg.search_budgets(),
+        interpreter=LlmPreferenceInterpreter(build_llm(cfg.llm, 'preferences')),
+    )
+    generator = cv_generator_use_case(cfg, client, store, storage_bucket, telegram_token)
+    reviews = CvReviewService(
+        generation=generator, reviews=FirestoreCvReviewStore(client),
+        corrections=FirestoreProfileCorrections(client),
+        interpreter=CvEditInterpreter(build_llm(cfg.llm, 'tailor')),
+        after_profile_change=preferences.after_profile_change, notify=telegram.send_text,
+    )
     add_telegram_webhook(
         app,
         secret=telegram_secret,
@@ -87,14 +101,10 @@ def build_webhook_app() -> FastAPI:
         messenger=telegram,
         build_profile=build_profile_use_case(cfg, profiles, TelegramProfileReporter(telegram), settings),
         resend_pending=ResendPendingNotifications(store, offer_notifier, offer_messages),
-        cv_generator=cv_generator_use_case(cfg, client, store, storage_bucket, telegram_token),
+        cv_generator=generator,
+        cv_reviews=reviews,
         offer_messages=offer_messages,
-        preferences=ManageSearchPreferences(
-            store=settings,
-            profiles=profiles,
-            budgets=cfg.search_budgets(),
-            interpreter=LlmPreferenceInterpreter(build_llm(cfg.llm, "preferences")),
-        ),
+        preferences=preferences,
         preferences_chat=TelegramPreferencesChat(telegram_token, telegram_chat_id.strip()),
         applied_proposals=FirestoreAppliedProposals(client),
         execution_lock=execution_lock,

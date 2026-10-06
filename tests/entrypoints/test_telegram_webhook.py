@@ -931,3 +931,167 @@ def test_failed_build_does_not_rebuild_the_plan():
 
 def test_help_lists_the_preferences_command():
     assert "\n/preferencias — ver o cambiar el tipo de ofertas que busco" in HELP
+
+
+from tests.application.test_cv_review import review_harness
+from tests.application.test_generate_tailored_cv import harness
+
+
+@pytest.fixture
+def review_webhook(review_harness):
+    from types import SimpleNamespace
+    h = review_harness
+    h.previews, h.proposals, h.answers = [], [], []
+    def preview(*args):
+        h.previews.append(args)
+        return SimpleNamespace(preview_message_id=100+len(h.previews), markdown_message_id=200+len(h.previews))
+    def proposal(*args):
+        h.proposals.append(args)
+        return 301
+    h.use_case.delivery.send_preview = preview
+    h.use_case.delivery.send_edit_proposal = proposal
+    h.messenger = Messenger()
+    app=FastAPI()
+    add_telegram_webhook(app, secret='hook-secret', chat_id='42', messenger=h.messenger,
+        build_profile=Builder(), resend_pending=Builder(), cv_generator=h.use_case,
+        cv_reviews=h.service, offer_messages=SimpleNamespace(resolve=lambda *a:'offer'),
+        preferences=NoPreferences(), preferences_chat=SimpleNamespace(answer=lambda *a:h.answers.append(a)), bot_id=123)
+    h.web=TestClient(app)
+    def post(text=None, data=None, reply=None, user=42, kind='private'):
+        message={'message_id':90,'chat':{'id':42,'type':kind},'from':{'id':user}}
+        if data:
+            payload={'callback_query':{'id':'callback','data':data,'from':{'id':user},'message':message}}
+        else:
+            message['text']=text
+            if reply is not None: message['reply_to_message']={'message_id':reply,'from':{'id':123,'is_bot':True}}
+            payload={'message':message}
+        return h.web.post('/webhooks/telegram', headers=SECRET,json=payload)
+    h.post=post
+    return h
+
+
+def test_adjust_cv_publishes_review_before_pdf_and_explicit_approval_delivers(review_webhook):
+    h=review_webhook
+    h.post('/ajustar_cv',reply=91)
+    assert len(h.previews)==1 and 'render' not in h.events
+    _,_,review,revision,summary,markdown=h.previews[-1]
+    assert markdown == h.state.tailored.resume_markdown
+    h.post(data=f'cv:approve:{review}:{revision}')
+    assert h.events.count('render') == 1
+    assert h.answers[0][1] == 'Procesando revisión…'
+    h.post(data=f'cv:approve:{review}:{revision}')
+    assert h.events.count('send_pdf') == 1
+
+
+def test_correction_reply_confirm_stale_approval_reject_cancel(review_webhook):
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    from types import SimpleNamespace
+    from job_agent.adapters.persistence.firestore_profile_corrections import FirestoreProfileCorrections
+    h=review_webhook
+    h.client.collection('profiles').document('current').set(h.state.profile.model_dump())
+    h.service.corrections=FirestoreProfileCorrections(h.client)
+    h.state.tailored=h.state.tailored.model_copy(update={'resume_markdown':'# CV\nOld headline\nPython'})
+    h.service.interpreter=SimpleNamespace(propose=lambda *a:CvEditProposal(replacements=[TextReplacement(old_text='Old headline',new_text='New headline')],fact_operations=[],explanation='Local'))
+    h.post('/ajustar_cv',reply=91)
+    review,revision=h.previews[-1][2:4]
+    h.post('Mejora el titular',reply=101)
+    assert len(h.proposals)==1
+    proposal=h.proposals[-1][3]
+    h.post(data=f'cv:confirm:{review}:{proposal}')
+    assert len(h.previews)==2
+    h.post(data=f'cv:approve:{review}:{revision}')
+    assert 'render' not in h.events
+    assert any('cambió' in m for m in h.messenger.sent)
+    h.post(data=f'cv:edit:{review}')
+    assert any('Responde' in m for m in h.messenger.sent)
+    h.post(data=f'cv:cancel:{review}')
+    assert h.reviews.load(review,'42').status=='CANCELLED'
+
+
+@pytest.mark.parametrize('user,kind,reply', [(99,'private',101),(42,'group',101),(42,'private',999)])
+def test_review_replies_require_owner_and_mapped_preview(review_webhook,user,kind,reply):
+    h=review_webhook
+    h.post('/ajustar_cv',reply=91)
+    h.post('Elimina inglés',reply=reply,user=user,kind=kind)
+    assert h.proposals==[]
+
+
+def test_legacy_pdf_command_reopens_ready_version(review_webhook):
+    h=review_webhook
+    h.post('/ajustar_cv',reply=91)
+    review,revision=h.previews[-1][2:4]
+    h.post(data=f'cv:approve:{review}:{revision}')
+    h.post('/corregir_cv',reply=102)
+    assert len(h.previews)==2
+    assert h.previews[-1][2] != review
+    assert h.events.count('tailor') == 1
+
+
+def test_factual_reply_shows_future_profile_change_then_rejects_without_mutation(review_webhook):
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    from job_agent.domain.cv_corrections import FactOperation
+    from job_agent.adapters.persistence.firestore_profile_corrections import FirestoreProfileCorrections
+    from types import SimpleNamespace
+    h=review_webhook
+    h.client.collection('profiles').document('current').set(h.state.profile.model_dump())
+    h.service.corrections=FirestoreProfileCorrections(h.client)
+    h.state.tailored=h.state.tailored.model_copy(update={'resume_markdown':'# CV\nEnglish B2\nPython'})
+    h.service.interpreter=SimpleNamespace(propose=lambda *a:CvEditProposal(replacements=[TextReplacement(old_text='English B2\n',new_text='')],fact_operations=[FactOperation('remove_language','English')],explanation='No hablo inglés'))
+    h.post('/ajustar_cv',reply=91)
+    review=h.previews[-1][2]
+    h.post('No hablo inglés',reply=101)
+    assert len(h.proposals)==1
+    assert h.proposals[-1][-1]=='global'
+    assert 'futuros CV' in h.proposals[-1][-2]
+    assert 'Eliminar idioma: english' in h.proposals[-1][-2]
+    proposal=h.proposals[-1][3]
+    h.post(data=f'cv:reject:{review}:{proposal}')
+    assert h.service.corrections.load().version==0
+    assert h.reviews.load_proposal(review,proposal).status=='reject'
+
+
+@pytest.mark.parametrize('user,kind', [(99,'private'),(42,'group')])
+def test_review_buttons_reject_other_users_and_groups(review_webhook,user,kind):
+    h=review_webhook
+    h.post('/ajustar_cv',reply=91)
+    review,revision=h.previews[-1][2:4]
+    h.post(data=f'cv:approve:{review}:{revision}',user=user,kind=kind)
+    assert 'render' not in h.events
+    assert h.answers[-1][1] == CALLBACK_INVALID
+
+
+def test_delivered_pdf_correction_button_opens_a_new_review(review_webhook):
+    h=review_webhook
+    h.post('/ajustar_cv',reply=91)
+    review,revision=h.previews[-1][2:4]
+    h.post(data=f'cv:approve:{review}:{revision}')
+    h.web.post('/webhooks/telegram',headers=SECRET,json={'callback_query':{
+        'id':'correct','data':f'cv:correct:{review}','from':{'id':42},
+        'message':{'message_id':102,'chat':{'id':42,'type':'private'}}}})
+    assert len(h.previews)==2
+    assert h.previews[-1][2]!=review
+    assert h.events.count('tailor') == h.events.count('render') == 1
+
+
+def test_old_buttonless_pdf_command_uses_saved_markdown_without_models(review_webhook):
+    from tests.application.test_generate_tailored_cv import NOW
+    h=review_webhook
+    prepared=h.use_case.prepare('offer',NOW)
+    h.use_case.execute(prepared,'42',91)
+    assert prepared.key.review_id is None
+    h.post('/corregir_cv',reply=102)
+    assert len(h.previews)==1
+    assert h.previews[0][-1]==h.state.tailored.resume_markdown
+    assert h.events.count('tailor') == h.events.count('render') == 1
+
+
+def test_legacy_lookup_missing_index_explains_retry_without_changing_state(review_webhook,monkeypatch):
+    from google.api_core.exceptions import FailedPrecondition
+    h=review_webhook
+    before=dict(h.client.docs)
+    def missing_index(*a,**kw): raise FailedPrecondition('private backend URL and query')
+    monkeypatch.setattr(h.client,'collection_group',missing_index)
+    h.post('/corregir_cv',reply=500)
+    assert h.client.docs==before
+    assert any('índice' in m and '/corregir_cv' in m for m in h.messenger.sent)
+    assert not any('private backend' in m for m in h.messenger.sent)

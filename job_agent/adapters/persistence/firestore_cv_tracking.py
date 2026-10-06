@@ -6,9 +6,11 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+from google.api_core.exceptions import FailedPrecondition
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
-from ...application.cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
+from ...application.cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion, LegacyCvLookupUnavailable
 from ...domain.models import JobMatch, JobPosting, TailoredResume
 
 
@@ -124,6 +126,26 @@ class FirestoreCvTrackingStore:
             delivery_status=data['delivery_status'],
         )
 
+    def find_ready_by_pdf_message(self, message_id: int) -> ReadyCvVersion | None:
+        if type(message_id) is not int or message_id <= 0:
+            return None
+        indexed = self.client.collection('cv_pdf_messages').document(str(message_id)).get().to_dict()
+        if indexed:
+            return self.load_ready(CvVersionKey(**indexed['key']))
+        # Legacy buttonless PDFs predate the receipt index.
+        try:
+            matches = list(self.client.collection_group('versions').where(
+                filter=FieldFilter('pdf_message_id', '==', message_id)).limit(2).stream())
+        except FailedPrecondition:
+            raise LegacyCvLookupUnavailable('Historical PDF lookup index is unavailable') from None
+        if len(matches) != 1:
+            return None
+        data = matches[0].to_dict()
+        if data.get('generation_status') != 'READY':
+            return None
+        key = CvVersionKey(**{field: data[field] for field in CvVersionKey.__dataclass_fields__ if field in data})
+        return self.load_ready(key)
+
     def begin_delivery(self, key: CvVersionKey) -> None:
         """A fresh explicit resend must not mistake old receipts for new delivery."""
         version = self._version(key)
@@ -172,5 +194,7 @@ class FirestoreCvTrackingStore:
                 changes['delivery_status'] = 'FAILED'
                 changes['delivery_failed_at'] = firestore.SERVER_TIMESTAMP
             transaction.set(version, changes, merge=True)
+            if receipt == 'pdf_message_id':
+                transaction.set(self.client.collection('cv_pdf_messages').document(str(message_id)), {'key': asdict(key)})
 
         deliver(self.client.transaction())

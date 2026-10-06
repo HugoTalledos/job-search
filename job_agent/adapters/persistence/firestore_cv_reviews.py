@@ -161,3 +161,18 @@ class FirestoreCvReviewStore:
                 raise ValueError('Unknown or inactive review')
             transaction.set(ref, {**data, 'status': 'CANCELLED'})
         cancel(self.client.transaction())
+
+
+    def record_preview(self, review_id, revision_id, chat_id, preview_message_id, markdown_message_id):
+        self.load_revision(review_id, revision_id, chat_id)
+        self.client.collection('cv_preview_messages').document(f'{chat_id}_{preview_message_id}').set({
+            'review_id': review_id, 'revision_id': revision_id, 'chat_id': str(chat_id),
+            'preview_message_id': preview_message_id, 'markdown_message_id': markdown_message_id,
+        })
+
+    def resolve_preview(self, chat_id, message_id):
+        data = self.client.collection('cv_preview_messages').document(f'{chat_id}_{message_id}').get().to_dict()
+        if not data or data['chat_id'] != str(chat_id):
+            return None
+        self.load(data['review_id'], chat_id)
+        return data['review_id'], data['revision_id']

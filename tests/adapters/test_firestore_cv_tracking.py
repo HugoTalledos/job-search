@@ -90,6 +90,20 @@ class Client:
     def transaction(self):
         return Transaction(self)
 
+    def collection_group(self, name):
+        client = self
+        class Query:
+            def where(self, *, filter):
+                self.filter = filter
+                return self
+            def limit(self, count):
+                self.count = count
+                return self
+            def stream(self):
+                return iter([Snapshot(data) for path, data in client.docs.items()
+                    if path.split('/')[-2] == name and data.get(self.filter.field_path) == self.filter.value][:self.count])
+        return Query()
+
 
 @pytest.fixture
 def client():
@@ -352,3 +366,14 @@ def test_begin_delivery_rejects_generation_that_is_not_ready(store, key, now):
     store.claim(key, now)
     with pytest.raises(LookupError):
         store.begin_delivery(key)
+
+
+def test_find_ready_pdf_uses_receipt_and_old_buttonless_version(store, key, now, artifacts, match, tailored):
+    claim=store.claim(key,now)
+    store.mark_ready(key,artifacts,match,tailored,attempt_id=claim.attempt_id)
+    store.mark_pdf_sent(key,73)
+    assert store.find_ready_by_pdf_message(73).key == key
+    # Old versions have no new receipt index: query historical version documents.
+    store.client.docs.pop('cv_pdf_messages/73',None)
+    assert store.find_ready_by_pdf_message(73).artifacts == artifacts
+    assert store.find_ready_by_pdf_message(999) is None

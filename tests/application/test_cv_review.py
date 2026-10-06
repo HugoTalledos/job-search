@@ -253,3 +253,53 @@ def test_revoke_denial_and_restore_fragment_atomically(review_harness, monkeypat
         assert h.use_case.artifacts.read_markdown(revision.markdown_uri) == '# CV\nPython\nTeam leader'
         assert h.service.corrections.load().version == 2
         assert h.service.corrections.load().operations == []
+
+
+def test_retry_after_factual_refresh_reuses_saved_analysis_and_receipts(review_harness):
+    h = review_harness
+    review = h.service.prepare('offer', '42', NOW)
+    revision = h.service.generate_draft(review.review_id, '42')
+    h.corrections = CorrectionSet(version=1, operations=[FactOperation('deny_claim', 'Team leader')])
+    h.state.fail = 'send_pdf'
+    with pytest.raises(RuntimeError): h.service.approve(review.review_id, revision.revision_id, '42')
+    before = h.events.count('match')
+    h.state.fail = None
+    h.service.approve(review.review_id, revision.revision_id, '42')
+    assert h.events.count('match') == before
+    assert h.events.count('tailor') == h.events.count('render') == h.events.count('send_summary') == 1
+
+
+def test_delivered_pdf_reopens_stored_markdown_and_preserves_original(review_harness):
+    h = review_harness
+    review = h.service.prepare('offer', '42', NOW)
+    revision = h.service.generate_draft(review.review_id, '42')
+    result = h.service.approve(review.review_id, revision.revision_id, '42')
+    ready = h.store.load_ready(result.key)
+    reopened = h.service.open_delivered(ready, '42', NOW)
+    edited = h.reviews.load_revision(reopened.review_id, reopened.active_revision_id, '42')
+    assert h.use_case.artifacts.read_markdown(edited.markdown_uri) == ready.tailored.resume_markdown
+    assert reopened.review_id != review.review_id
+    assert h.store.load_ready(result.key) == ready
+    assert h.events.count('tailor') == 1
+
+
+def test_preview_receipts_map_only_the_owning_private_chat(review_harness):
+    h = review_harness
+    review = h.service.prepare('offer', '42', NOW)
+    revision = h.service.generate_draft(review.review_id, '42')
+    h.reviews.record_preview(review.review_id, revision.revision_id, '42', 100, 101)
+    assert h.reviews.resolve_preview('42', 100) == (review.review_id, revision.revision_id)
+    assert h.reviews.resolve_preview('99', 100) is None
+    assert h.reviews.resolve_preview('42', 999) is None
+    with pytest.raises(ValueError): h.reviews.record_preview(review.review_id, revision.revision_id, '99', 100, 101)
+
+
+def test_failed_refreshed_analysis_is_immediately_retryable(review_harness):
+    h=review_harness
+    review=h.service.prepare('offer','42',NOW)
+    revision=h.service.generate_draft(review.review_id,'42')
+    h.corrections=CorrectionSet(version=1,operations=[FactOperation('deny_claim','Team leader')])
+    h.state.fail='match'
+    with pytest.raises(RuntimeError): h.service.approve(review.review_id,revision.revision_id,'42')
+    h.state.fail=None
+    assert h.service.approve(review.review_id,revision.revision_id,'42').delivery_status=='SENT'

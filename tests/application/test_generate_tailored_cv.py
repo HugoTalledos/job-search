@@ -38,7 +38,7 @@ def harness(job, profile, match, tailored):
 
     tracking = SimpleNamespace(**{name: operation(name, getattr(store, name)) for name in (
         'claim', 'mark_ready', 'mark_failed', 'load_ready', 'begin_delivery',
-        'mark_summary_sent', 'mark_pdf_sent', 'mark_delivery_failed',
+        'mark_summary_sent', 'mark_pdf_sent', 'mark_delivery_failed', 'find_ready_by_pdf_message',
     )})
     use_case = GenerateTailoredCv(
         resume=SimpleNamespace(read=operation('resume', lambda: state.resume)),
@@ -51,7 +51,7 @@ def harness(job, profile, match, tailored):
         artifacts=SimpleNamespace(save=operation('upload', artifacts.save),
                                   read_pdf=operation('read_pdf', artifacts.read_pdf)),
         delivery=SimpleNamespace(send_summary=operation('send_summary', lambda *args: 101),
-                                 send_pdf=operation('send_pdf', lambda *args: 102)),
+                                 send_pdf=operation('send_pdf', lambda *args, **kwargs: 102)),
     )
     return SimpleNamespace(use_case=use_case, events=events, calls=calls, state=state, client=client,
                            storage_client=storage_client, store=store)

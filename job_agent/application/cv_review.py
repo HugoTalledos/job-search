@@ -80,19 +80,25 @@ class CvReviewService:
         context = self.reviews.load_context(review_id)
         profile = self.generation.profile_reader.load()
         posting = JobPosting.model_validate(context['posting'])
-        # Refresh evidence for factual changes without rewriting the approved CV.
-        match = JobMatch.model_validate(context['match'])
-        if corrections.version != review.key.corrections_version:
-            match = self.generation.matcher.score(posting, profile, context['resume_text'], corrections=corrections)
-        tailored = TailoredResume.model_validate(context['tailored']).model_copy(update={
-            'resume_markdown': markdown,
-            'summary_for_candidate': 'CV revisado y aprobado.', 'changes': [],
-        })
         key = replace(review.key, corrections_version=corrections.version,
                       review_id=review_id, revision_id=revision_id)
         claim = self.generation.tracking.claim(key, datetime.now(timezone.utc))
         prepared = PreparedCvRequest(key, claim.action, context['resume_text'], profile, posting,
                                      datetime.fromisoformat(context['requested_at']), claim.attempt_id)
+        # Ready artifacts already contain the approved analysis. Delivery retries never score again.
+        match, tailored = None, None
+        if claim.action == 'generate':
+            try:
+                match = JobMatch.model_validate(context['match'])
+                if corrections.version != review.key.corrections_version:
+                    match = self.generation.matcher.score(posting, profile, context['resume_text'], corrections=corrections)
+                tailored = TailoredResume.model_validate(context['tailored']).model_copy(update={
+                    'resume_markdown': markdown,
+                    'summary_for_candidate': 'CV revisado y aprobado.', 'changes': [],
+                })
+            except Exception:
+                self.generation.tracking.mark_failed(key, attempt_id=claim.attempt_id)
+                raise
         return self.generation.execute(prepared, chat_id, reply_to_message_id, approved_match=match,
                                        approved_tailored=tailored, resend=False)
 
@@ -170,3 +176,36 @@ class CvReviewService:
         def reject(transaction):
             return self.reviews.resolve_proposal_in_transaction(transaction, review_id, proposal_id, 'reject')
         return reject(self.reviews.client.transaction())
+
+
+    def open_delivered(self, ready, chat_id, now):
+        """Fork the saved delivered Markdown, never rerun tailoring or overwrite its version."""
+        g = self.generation
+        posting = g.posting_reader.load(ready.key.posting_id)
+        profile = g.profile_reader.load()
+        # Source identity makes separate delivered versions separate editable drafts.
+        key = replace(ready.key, review_id=None, revision_id=ready.key.version_id)
+        review = self.reviews.create_or_resume(ready.key.posting_id, chat_id, key)
+        if review.active_revision_id:
+            return review
+        markdown = g.artifacts.read_markdown(ready.artifacts.markdown_uri)
+        self.reviews.save_context(review.review_id, {
+            'resume_text': g.resume.read(), 'profile': profile.model_dump(mode='json'),
+            'posting': posting.model_dump(mode='json'), 'requested_at': now.isoformat(),
+            'match': ready.match.model_dump(mode='json'), 'tailored': ready.tailored.model_dump(mode='json'),
+        })
+        uri = g.artifacts.save_markdown(review.review_id, token_urlsafe(12), markdown)
+        self.reviews.publish_revision(review.review_id, None, uri, None)
+        return self.reviews.load(review.review_id, chat_id)
+
+    def show_preview(self, review_id, chat_id, reply_to_message_id):
+        review = self.reviews.load(review_id, chat_id)
+        revision = self.reviews.load_revision(review_id, review.active_revision_id, chat_id)
+        markdown = self.generation.artifacts.read_markdown(revision.markdown_uri)
+        # Derived from this revision, never from stale tailoring claims.
+        summary = '\n'.join(line for line in markdown.splitlines() if line.strip())[:2500]
+        receipt = self.generation.delivery.send_preview(chat_id, reply_to_message_id,
+            review_id, revision.revision_id, summary, markdown)
+        self.reviews.record_preview(review_id, revision.revision_id, chat_id,
+            receipt.preview_message_id, receipt.markdown_message_id)
+        return receipt

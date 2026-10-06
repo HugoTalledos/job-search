@@ -76,3 +76,7 @@ class ReadyCvVersion:
     summary_message_id: int | None = None
     pdf_message_id: int | None = None
     delivery_status: DeliveryStatus = 'PENDING'
+
+
+class LegacyCvLookupUnavailable(RuntimeError):
+    """The deployment has not enabled the historical PDF receipt lookup index."""
