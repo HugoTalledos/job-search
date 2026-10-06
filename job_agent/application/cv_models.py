@@ -21,11 +21,14 @@ class CvVersionKey:
     resume_fingerprint: str
     profile_fingerprint: str
     job_fingerprint: str
+    corrections_version: int = 0
 
     @property
     def version_id(self) -> str:
         # A structured encoding keeps adjacent input boundaries unambiguous.
         inputs = [self.posting_id, self.resume_fingerprint, self.profile_fingerprint, self.job_fingerprint]
+        if self.corrections_version:
+            inputs.append(self.corrections_version)
         return hashlib.sha256(json.dumps(inputs, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 

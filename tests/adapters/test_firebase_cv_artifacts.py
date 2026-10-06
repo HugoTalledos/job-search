@@ -109,3 +109,25 @@ def test_attempt_id_must_be_a_nonempty_safe_path_component(store, client, key, a
     with pytest.raises(ValueError, match='attempt_id'):
         store.save(key, b'pdf', 'cv', 'readme', attempt_id=attempt_id)
     assert not client.objects
+
+
+def test_review_markdown_is_immutable_and_legacy_markdown_is_readable(store, client, key):
+    uri = store.save_markdown('review', 'revision', '# español')
+    assert store.read_markdown(uri) == '# español'
+    with pytest.raises(PreconditionFailed):
+        store.save_markdown('review', 'revision', 'replacement')
+    artifacts = store.save(key, b'pdf', '# legacy', 'readme', attempt_id='legacy')
+    assert store.read_markdown(artifacts.markdown_uri) == '# legacy'
+
+
+def test_failed_markdown_upload_returns_no_pointer(store, client):
+    client.fail_on = 'resume.md'
+    with pytest.raises(RuntimeError):
+        store.save_markdown('review', 'revision', 'cv')
+    assert not client.objects
+
+
+@pytest.mark.parametrize('uri', ['gs://other/cv.md', 'https://public/cv.md', 'gs://private-bucket/'])
+def test_markdown_read_requires_private_bucket(store, uri):
+    with pytest.raises(ValueError):
+        store.read_markdown(uri)
