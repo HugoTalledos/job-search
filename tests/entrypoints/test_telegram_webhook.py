@@ -983,7 +983,8 @@ def test_adjust_cv_publishes_review_before_pdf_and_explicit_approval_delivers(re
     assert h.events.count('send_pdf') == 1
 
 
-def test_correction_reply_confirm_stale_approval_reject_cancel(review_webhook):
+@pytest.mark.parametrize("reply_id", [101, 201])
+def test_correction_reply_confirm_stale_approval_reject_cancel(review_webhook, reply_id):
     from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
     from types import SimpleNamespace
     from job_agent.adapters.persistence.firestore_profile_corrections import FirestoreProfileCorrections
@@ -994,7 +995,7 @@ def test_correction_reply_confirm_stale_approval_reject_cancel(review_webhook):
     h.service.interpreter=SimpleNamespace(propose=lambda *a:CvEditProposal(replacements=[TextReplacement(old_text='Old headline',new_text='New headline')],fact_operations=[],explanation='Local'))
     h.post('/ajustar_cv',reply=91)
     review,revision=h.previews[-1][2:4]
-    h.post('Mejora el titular',reply=101)
+    h.post('Mejora el titular',reply=reply_id)
     assert len(h.proposals)==1
     proposal=h.proposals[-1][3]
     h.post(data=f'cv:confirm:{review}:{proposal}')

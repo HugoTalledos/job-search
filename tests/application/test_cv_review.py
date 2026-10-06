@@ -95,19 +95,25 @@ def test_approval_rechecks_current_corrections_before_approving(review_harness):
     assert 'render' not in h.events
 
 
-def test_new_noncontradictory_correction_cannot_reuse_stale_ready_analysis(review_harness):
+@pytest.mark.parametrize('failed', [False, True])
+def test_approval_key_survives_unrelated_correction(review_harness, failed):
     h = review_harness
     review = h.service.prepare('offer', '42', NOW)
     revision = h.service.generate_draft(review.review_id, '42')
-    first = h.service.approve(review.review_id, revision.revision_id, '42')
+    if failed:
+        h.state.fail = 'send_pdf'
+        with pytest.raises(RuntimeError):
+            h.service.approve(review.review_id, revision.revision_id, '42')
+        h.state.fail = None
+    else:
+        h.service.approve(review.review_id, revision.revision_id, '42')
     h.corrections = CorrectionSet(version=1, operations=[FactOperation('deny_claim', 'managed international teams')])
-    h.state.match = h.state.match.model_copy(update={'reasons': ['Updated confirmed facts']})
     second = h.service.approve(review.review_id, revision.revision_id, '42')
-    assert second.key.corrections_version == 1
-    assert second.key.version_id != first.key.version_id
-    assert h.store.load_ready(second.key).match.reasons == ['Updated confirmed facts']
-    assert h.store.load_ready(first.key).match.reasons != ['Updated confirmed facts']
-    assert h.events.count('tailor') == 1
+    assert second.key.corrections_version == 0
+    assert h.events.count('render') == h.events.count('send_summary') == 1
+    fresh = h.service.prepare('offer', '42', NOW)
+    fresh_revision = h.service.generate_draft(fresh.review_id, '42')
+    assert h.service.approve(fresh.review_id, fresh_revision.revision_id, '42').key.corrections_version == 1
 
 
 def editing(h, markdown, replacements, facts=()):
@@ -341,3 +347,65 @@ def test_overlapping_approvals_deliver_one_pdf_and_confirm_success(review_harnes
     assert h.store.load_ready(result.key).pdf_message_id==102
     assert h.service.approve(review.review_id,revision.revision_id,'42').delivery_status=='SENT'
     assert successful==[102]
+
+
+def test_late_prepare_cannot_overwrite_completed_context(review_harness, monkeypatch):
+    h=review_harness
+    original=h.reviews.save_context
+    published=[]
+    def overlap(review_id, context):
+        original(review_id, context)
+        published.append(h.service.generate_draft(review_id, '42'))
+        original(review_id, context)
+    monkeypatch.setattr(h.reviews, 'save_context', overlap)
+    review=h.service.prepare('offer','42',NOW)
+    assert 'match' in h.reviews.load_context(review.review_id)
+    assert h.service.approve(review.review_id,published[0].revision_id,'42').delivery_status=='SENT'
+
+
+def test_overlapping_generation_is_claimed_once(review_harness, monkeypatch):
+    h=review_harness
+    review=h.service.prepare('offer','42',NOW)
+    original=h.use_case.matcher.score
+    nested=[]
+    def overlap(*args, **kwargs):
+        if not nested:
+            nested.append(True)
+            with pytest.raises(ValueError, match='progress'):
+                h.service.generate_draft(review.review_id,'42')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(h.use_case.matcher,'score',overlap)
+    revision=h.service.generate_draft(review.review_id,'42')
+    assert h.events.count('tailor')==1
+    assert h.reviews.load_context(review.review_id)['revision_id']==revision.revision_id
+
+
+def test_base_resume_conflict_notifies_after_fact_commit(review_harness):
+    h=review_harness
+    h.state.resume='English B2 and Python'
+    review,_=editing(h,'# CV\nEnglish B2\nPython',[('English B2\n','')],[FactOperation('remove_language','English')])
+    notices=[]
+    h.service.notify=notices.append
+    proposal=h.service.propose_edit(review.review_id,'42','No hablo inglés')
+    h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.service.corrections.load().version==1
+    assert len(notices)==1 and 'resume/base.md' in notices[0] and len(notices[0])<300
+
+
+def test_revocation_through_interpreter_uses_active_ids(review_harness):
+    import json
+    from job_agent.adapters.llm.cv_edit import CvEditInterpreter
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    h=review_harness
+    review,_=editing(h,'# CV\nPython\nOtras habilidades',[('Otras habilidades','Team leader')])
+    h.service.corrections.confirm([FactOperation('deny_claim','Team leader')],0)
+    def complete(**kwargs):
+        facts=json.loads(kwargs['content'])['corrections']
+        assert facts.get('active_ids'), 'Interpreter must receive active correction references'
+        return CvEditProposal(replacements=[TextReplacement(old_text='Otras habilidades',new_text='Team leader')],
+            fact_operations=[FactOperation('revoke',facts['active_ids'][0])],explanation='Restaurar')
+    h.service.interpreter=CvEditInterpreter(SimpleNamespace(complete=complete))
+    proposal=h.service.propose_edit(review.review_id,'42','Revoco la negación de Team leader')
+    revision=h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
+    assert h.service.corrections.load().operations==[]
+    assert 'Team leader' in h.use_case.artifacts.read_markdown(revision.markdown_uri)

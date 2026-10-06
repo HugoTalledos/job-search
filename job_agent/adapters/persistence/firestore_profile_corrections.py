@@ -33,8 +33,8 @@ class FirestoreProfileCorrections:
         # Read the index and its immutable records from one consistent snapshot.
         @firestore.transactional
         def read(transaction):
-            data, _, operations = self._read(transaction)
-            return CorrectionSet(version=data.get('version', 0), operations=operations)
+            data, ids, operations = self._read(transaction)
+            return CorrectionSet(version=data.get('version', 0), operations=operations, active_ids=ids)
         return read(self.client.transaction())
 
     def confirm(self, operations: list[FactOperation], expected_version: int) -> CorrectionSet:
@@ -61,7 +61,7 @@ class FirestoreProfileCorrections:
         version = data.get('version', 0)
         if version != expected_version:
             if data.get('last_request_id') == request_id and version == expected_version + 1:
-                return CorrectionSet(version=version, operations=active)
+                return CorrectionSet(version=version, operations=active, active_ids=ids)
             raise CorrectionVersionConflict('Confirmed facts changed; reload the proposal')
         if profile_data is None:
             raise ValueError('A profile is required before confirming facts')
@@ -84,10 +84,10 @@ class FirestoreProfileCorrections:
                                             'scope': 'global', 'version': version + 1}))
         effective = apply_fact_operations(base, new_active)
         if not persist:
-            return CorrectionSet(version=version + 1, operations=new_active)
+            return CorrectionSet(version=version + 1, operations=new_active, active_ids=new_ids)
         for correction_id, record in records:
             transaction.set(self.collection.document(correction_id), record)
         transaction.set(self.current, {'version': version + 1, 'active_ids': new_ids, 'last_request_id': request_id})
         transaction.set(self.profile, {**profile_data, **effective.model_dump(),
                                       'inferred_profile': base.model_dump(), 'corrections_version': version + 1})
-        return CorrectionSet(version=version + 1, operations=new_active)
+        return CorrectionSet(version=version + 1, operations=new_active, active_ids=new_ids)

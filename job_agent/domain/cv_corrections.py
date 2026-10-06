@@ -121,6 +121,7 @@ class CorrectionSet(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: int = Field(ge=0, strict=True)
     operations: list[FactOperation]
+    active_ids: list[str] = Field(default_factory=list)
 
 
 def apply_fact_operations(base: Profile, operations: list[FactOperation]) -> Profile:

@@ -45,19 +45,21 @@ class CvReviewService:
         review = self.reviews.load(review_id, chat_id)
         if review.active_revision_id:
             return self.reviews.load_revision(review_id, review.active_revision_id, chat_id)
-        context = self.reviews.load_context(review_id)
-        posting, profile = JobPosting.model_validate(context['posting']), Profile.model_validate(context['profile'])
-        corrections = self.corrections.load()
-        g = self.generation
-        kwargs = {'corrections': corrections} if corrections.version else {}
-        match = g.matcher.score(posting, profile, context['resume_text'], **kwargs)
-        tailored = g.tailor.tailor(posting, match, profile, context['resume_text'], **kwargs)
-        self._validate(tailored.resume_markdown, corrections)
-        # Persist analysis first; failure never creates an active incomplete draft.
-        self.reviews.save_context(review_id, {**context, 'match': match.model_dump(mode='json'),
-                                              'tailored': tailored.model_dump(mode='json')})
-        uri = g.artifacts.save_markdown(review_id, token_urlsafe(12), tailored.resume_markdown)
-        return self.reviews.publish_revision(review_id, None, uri, None)
+        token = self.reviews.claim_generation(review_id)
+        try:
+            context = self.reviews.load_context(review_id)
+            posting, profile = JobPosting.model_validate(context['posting']), Profile.model_validate(context['profile'])
+            corrections = self.corrections.load()
+            g = self.generation
+            kwargs = {'corrections': corrections} if corrections.version else {}
+            match = g.matcher.score(posting, profile, context['resume_text'], **kwargs)
+            tailored = g.tailor.tailor(posting, match, profile, context['resume_text'], **kwargs)
+            self._validate(tailored.resume_markdown, corrections)
+            uri = g.artifacts.save_markdown(review_id, token_urlsafe(12), tailored.resume_markdown)
+            return self.reviews.publish_generated(review_id, token, uri, {
+                **context, 'match': match.model_dump(mode='json'), 'tailored': tailored.model_dump(mode='json')})
+        finally:
+            self.reviews.release_generation(review_id, token)
 
     @staticmethod
     def _validate(markdown, corrections):
@@ -74,14 +76,13 @@ class CvReviewService:
         markdown = self.generation.artifacts.read_markdown(revision.markdown_uri)
         corrections = self.corrections.load()
         self._validate(markdown, corrections)
-        approval = self.reviews.approve(review_id, revision_id, chat_id)
+        approval = self.reviews.approve(review_id, revision_id, chat_id, corrections_version=corrections.version)
         if approval.status not in {'approved', 'already_approved'}:
             raise ValueError(f'{approval.status} CV revision')
         context = self.reviews.load_context(review_id)
         profile = self.generation.profile_reader.load()
         posting = JobPosting.model_validate(context['posting'])
-        key = replace(review.key, corrections_version=corrections.version,
-                      review_id=review_id, revision_id=revision_id)
+        key = approval.key
         claim = self.generation.tracking.claim(key, datetime.now(timezone.utc))
         prepared = PreparedCvRequest(key, claim.action, context['resume_text'], profile, posting,
                                      datetime.fromisoformat(context['requested_at']), claim.attempt_id)
@@ -163,6 +164,8 @@ class CvReviewService:
             self.reviews.resolve_proposal_in_transaction(transaction, review_id, proposal_id, 'confirm', prepared=pending)
             return result
         result = confirm(self.reviews.client.transaction())
+        if proposal.fact_operations and contradictions(self.generation.resume.read(), self.corrections.load().operations):
+            self.notify('Corrección guardada. resume/base.md contiene datos que contradicen hechos confirmados; revisa el archivo base. La corrección sigue vigente.')
         if proposal.fact_operations and self.after_profile_change:
             try:
                 self.after_profile_change(self.notify)
@@ -188,14 +191,18 @@ class CvReviewService:
         review = self.reviews.create_or_resume(ready.key.posting_id, chat_id, key)
         if review.active_revision_id:
             return review
-        markdown = g.artifacts.read_markdown(ready.artifacts.markdown_uri)
-        self.reviews.save_context(review.review_id, {
-            'resume_text': g.resume.read(), 'profile': profile.model_dump(mode='json'),
-            'posting': posting.model_dump(mode='json'), 'requested_at': now.isoformat(),
-            'match': ready.match.model_dump(mode='json'), 'tailored': ready.tailored.model_dump(mode='json'),
-        })
-        uri = g.artifacts.save_markdown(review.review_id, token_urlsafe(12), markdown)
-        self.reviews.publish_revision(review.review_id, None, uri, None)
+        token = self.reviews.claim_generation(review.review_id)
+        try:
+            markdown = g.artifacts.read_markdown(ready.artifacts.markdown_uri)
+            context = {
+                'resume_text': g.resume.read(), 'profile': profile.model_dump(mode='json'),
+                'posting': posting.model_dump(mode='json'), 'requested_at': now.isoformat(),
+                'match': ready.match.model_dump(mode='json'), 'tailored': ready.tailored.model_dump(mode='json'),
+            }
+            uri = g.artifacts.save_markdown(review.review_id, token_urlsafe(12), markdown)
+            self.reviews.publish_generated(review.review_id, token, uri, context)
+        finally:
+            self.reviews.release_generation(review.review_id, token)
         return self.reviews.load(review.review_id, chat_id)
 
     def show_preview(self, review_id, chat_id, reply_to_message_id):

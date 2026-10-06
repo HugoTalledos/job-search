@@ -62,3 +62,42 @@ def test_review_and_revision_identifiers_fit_callbacks():
     revision = store.publish_revision(review.review_id, None, 'gs://private/a.md', None)
     assert re.fullmatch(r'[A-Za-z0-9_-]{16}', review.review_id)
     assert re.fullmatch(r'[A-Za-z0-9_-]{16}', revision.revision_id)
+
+
+def test_expired_generation_worker_cannot_publish_or_release_successor():
+    from datetime import datetime, timezone, timedelta
+    client = Client()
+    store = FirestoreCvReviewStore(client)
+    review = store.create_or_resume('offer', '123', CvVersionKey('offer', 'r', 'p', 'j'))
+    store.save_context(review.review_id, {'resume_text': 'original'})
+    first = store.claim_generation(review.review_id)
+    lease = store.reviews.document(review.review_id).collection('context').document('generation')
+    lease.set({'token': first, 'expires_at': datetime.now(timezone.utc) - timedelta(seconds=1)})
+    second = store.claim_generation(review.review_id)
+    store.release_generation(review.review_id, first)
+    with pytest.raises(StaleCvRevision, match='superseded'):
+        store.publish_generated(review.review_id, first, 'gs://private/old.md', {'match': 'old'})
+    revision = store.publish_generated(review.review_id, second, 'gs://private/new.md', {'match': 'new'})
+    assert store.load_context(review.review_id) == {'match': 'new', 'revision_id': revision.revision_id}
+    assert store.load(review.review_id, '123').active_revision_id == revision.revision_id
+    store.save_context(review.review_id, {'match': 'late'})
+    assert store.load_context(review.review_id)['match'] == 'new'
+
+
+def test_failed_generated_context_write_rolls_back_revision_and_allows_retry(monkeypatch):
+    client = Client()
+    store = FirestoreCvReviewStore(client)
+    review = store.create_or_resume('offer', '123', CvVersionKey('offer', 'r', 'p', 'j'))
+    store.save_context(review.review_id, {'resume_text': 'original'})
+    token = store.claim_generation(review.review_id)
+    original = store.publish_revision_in_transaction
+    def failed(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError('publication failure')
+    monkeypatch.setattr(store, 'publish_revision_in_transaction', failed)
+    with pytest.raises(RuntimeError):
+        store.publish_generated(review.review_id, token, 'gs://private/old.md', {'match': 'old'})
+    assert store.load(review.review_id, '123').active_revision_id is None
+    assert store.load_context(review.review_id) == {'resume_text': 'original'}
+    store.release_generation(review.review_id, token)
+    assert store.claim_generation(review.review_id) != token

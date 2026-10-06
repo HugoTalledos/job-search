@@ -25,12 +25,14 @@ class CvReview:
     active_revision_id: str | None = None
     approved_revision_id: str | None = None
     status: str = 'DRAFT'
+    approved_key: CvVersionKey | None = None
 
 
 @dataclass(frozen=True)
 class ApprovalResult:
     status: Literal['approved', 'already_approved', 'stale', 'unknown']
     revision: CvRevision | None = None
+    key: CvVersionKey | None = None
 
 
 class TextReplacement(BaseModel):
