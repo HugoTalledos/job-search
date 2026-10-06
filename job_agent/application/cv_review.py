@@ -83,7 +83,8 @@ class CvReviewService:
             'resume_markdown': markdown,
             'summary_for_candidate': 'CV revisado y aprobado.', 'changes': [],
         })
-        key = replace(review.key, review_id=review_id, revision_id=revision_id)
+        key = replace(review.key, corrections_version=corrections.version,
+                      review_id=review_id, revision_id=revision_id)
         claim = self.generation.tracking.claim(key, datetime.now(timezone.utc))
         prepared = PreparedCvRequest(key, claim.action, context['resume_text'], profile, posting,
                                      datetime.fromisoformat(context['requested_at']), claim.attempt_id)

@@ -93,3 +93,18 @@ def test_approval_rechecks_current_corrections_before_approving(review_harness):
         h.service.approve(review.review_id, revision.revision_id, '42')
     assert h.reviews.load(review.review_id, '42').status == 'DRAFT'
     assert 'render' not in h.events
+
+
+def test_new_noncontradictory_correction_cannot_reuse_stale_ready_analysis(review_harness):
+    h = review_harness
+    review = h.service.prepare('offer', '42', NOW)
+    revision = h.service.generate_draft(review.review_id, '42')
+    first = h.service.approve(review.review_id, revision.revision_id, '42')
+    h.corrections = CorrectionSet(version=1, operations=[FactOperation('deny_claim', 'managed international teams')])
+    h.state.match = h.state.match.model_copy(update={'reasons': ['Updated confirmed facts']})
+    second = h.service.approve(review.review_id, revision.revision_id, '42')
+    assert second.key.corrections_version == 1
+    assert second.key.version_id != first.key.version_id
+    assert h.store.load_ready(second.key).match.reasons == ['Updated confirmed facts']
+    assert h.store.load_ready(first.key).match.reasons != ['Updated confirmed facts']
+    assert h.events.count('tailor') == 1
