@@ -37,21 +37,21 @@ def harness(job, profile, match, tailored):
         return run
 
     tracking = SimpleNamespace(**{name: operation(name, getattr(store, name)) for name in (
-        'claim', 'mark_ready', 'mark_failed', 'load_ready', 'begin_delivery',
-        'mark_summary_sent', 'mark_pdf_sent', 'mark_delivery_failed',
+        'claim', 'mark_ready', 'mark_failed', 'load_ready', 'begin_delivery', 'claim_delivery', 'renew_delivery',
+        'mark_summary_sent', 'mark_pdf_sent', 'mark_delivery_failed', 'find_ready_by_pdf_message',
     )})
     use_case = GenerateTailoredCv(
         resume=SimpleNamespace(read=operation('resume', lambda: state.resume)),
         profile_reader=SimpleNamespace(load=operation('profile', lambda: state.profile)),
         posting_reader=SimpleNamespace(load=operation('posting:offer', lambda posting_id: state.job)),
-        matcher=SimpleNamespace(score=operation('match', lambda *args: state.match)),
-        tailor=SimpleNamespace(tailor=operation('tailor', lambda *args: state.tailored)),
+        matcher=SimpleNamespace(score=operation('match', lambda *args, **kwargs: state.match)),
+        tailor=SimpleNamespace(tailor=operation('tailor', lambda *args, **kwargs: state.tailored)),
         renderer=SimpleNamespace(render=operation('render', lambda markdown: state.pdf)),
         tracking=tracking,
         artifacts=SimpleNamespace(save=operation('upload', artifacts.save),
                                   read_pdf=operation('read_pdf', artifacts.read_pdf)),
         delivery=SimpleNamespace(send_summary=operation('send_summary', lambda *args: 101),
-                                 send_pdf=operation('send_pdf', lambda *args: 102)),
+                                 send_pdf=operation('send_pdf', lambda *args, **kwargs: 102)),
     )
     return SimpleNamespace(use_case=use_case, events=events, calls=calls, state=state, client=client,
                            storage_client=storage_client, store=store)
@@ -223,11 +223,11 @@ def test_pdf_failure_retry_reads_ready_artifacts_and_sends_only_pdf(harness):
     # Another failed retry must still persist delivery failure after reading the PDF.
     with pytest.raises(RuntimeError):
         h.use_case.execute(retry, '42', 91)
-    assert h.events == ['load_ready', 'read_pdf', 'send_pdf', 'mark_delivery_failed']
+    assert h.events == ['claim_delivery', 'load_ready', 'read_pdf', 'renew_delivery', 'send_pdf', 'mark_delivery_failed']
     h.state.fail = None
     h.events.clear()
     result = h.use_case.execute(retry, '42', 91)
-    assert h.events == ['load_ready', 'read_pdf', 'send_pdf', 'mark_pdf_sent']
+    assert h.events == ['claim_delivery', 'load_ready', 'read_pdf', 'renew_delivery', 'send_pdf', 'mark_pdf_sent']
     assert result.delivery_status == 'SENT'
 
 
@@ -240,7 +240,7 @@ def test_explicit_request_resends_both_and_failed_resend_retries_missing_pdf(har
     h.state.fail = 'send_pdf'
     with pytest.raises(RuntimeError):
         h.use_case.execute(retry, '42', 92)
-    assert 'begin_delivery' in h.events and 'send_summary' in h.events
+    assert 'claim_delivery' in h.events and 'send_summary' in h.events
     assert not {'match', 'tailor', 'render', 'upload'}.intersection(h.events)
     ready = h.store.load_ready(request.key)
     assert ready.summary_message_id == 101 and ready.pdf_message_id is None

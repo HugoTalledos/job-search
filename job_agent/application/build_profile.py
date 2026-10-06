@@ -21,10 +21,12 @@ class EnsureProfile:
         inferer: ProfileInferer,
         store: ProfileStore,
         *,
+        corrections=None,
         refresh_days: int = 30,
         preferred_locations: Callable[[], list[str]] = lambda: [],
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
+        self.corrections = corrections
         self.resume = resume
         self.repositories = repositories
         self.inferer = inferer
@@ -55,15 +57,17 @@ class EnsureProfile:
 
         log.info("Inferring profile (%s) from resume + %d repositories", reason, len(repos))
         evidence = [e for r in repos if (e := self.repositories.collect_evidence(r))]
-        profile = self.inferer.infer(resume_text, evidence, list(self.preferred_locations()))
-        self.store.save(
-            StoredProfile(
-                profile=profile,
-                resume_fingerprint=resume_fp,
-                repos_fingerprint=repos_fp,
-                built_at=now,
-                repos_checked_at=now,
-                repositories=evidence,
-            )
+        kwargs = {"corrections": self.corrections.load()} if self.corrections is not None else {}
+        profile = self.inferer.infer(resume_text, evidence, list(self.preferred_locations()), **kwargs)
+        stored = StoredProfile(
+            profile=profile,
+            resume_fingerprint=resume_fp,
+            repos_fingerprint=repos_fp,
+            built_at=now,
+            repos_checked_at=now,
+            repositories=evidence,
         )
+        if hasattr(self.store, "save_inferred"):
+            return self.store.save_inferred(stored).profile
+        self.store.save(stored)
         return profile

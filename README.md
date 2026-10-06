@@ -79,7 +79,7 @@ del bot. Comandos disponibles:
 | `/build-profile` (o `/build_profile`, el que aparece en el menú) | Responde de inmediato «Voy a construir tu nuevo perfil profesional» y, en segundo plano, lee `resume_path` y los repositorios públicos de `github_user` (más `repositories`) de `config.yaml`, infiere el perfil con el modelo de `llm` (tarea `profile`) y lo guarda en `profiles/current`. Al terminar te envía un resumen: titular, seniority, cargos objetivo, habilidades principales y las novedades frente al perfil anterior (habilidades nuevas o con otro nivel, cargos, dominios, fortalezas que tu CV no muestra…). Si falla, te avisa. |
 | `/resend_pending` | Responde inmediatamente «Estoy buscando propuestas que hayan quedado pendientes de notificar». En segundo plano, busca ofertas con estado `PENDING_NOTIFICATION` y reenvía la notificación usando la puntuación y el enriquecimiento guardados. Marca `NOTIFIED` cada envío confirmado; los fallidos conservan `PENDING_NOTIFICATION`. Al terminar informa cuántas se notificaron y cuántas fallaron. |
 | `/preferencias` | Sin texto, muestra tus preferencias de búsqueda guardadas y cuántas búsquedas tiene el plan vigente (sin usar el LLM). Con texto (`/preferencias quiero Go y sin Acme`), responde «Revisando tus preferencias…», interpreta la petición con el LLM (tarea `preferences`), y muestra el cambio y las primeras búsquedas con los botones Aplicar y Cancelar. Nada cambia hasta pulsar Aplicar; al aplicar se guardan `settings/search_preferences` (versión + 1) y el plan `settings/search_plan` que lee el buscador. Las propuestas caducan a las 24 horas. |
-| Botón «📄 Ajustar CV» (bajo cada oferta) | Responde de inmediato «Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar.» y, en segundo plano, genera un CV ajustado a esa oferta y te lo envía en PDF junto con un resumen de encaje y brechas. Ver la sección siguiente. Para ofertas antiguas sin botón, responde a su mensaje con `/ajustar_cv` (ya no aparece en el menú). |
+| Botón «📄 Ajustar CV» (bajo cada oferta) | Prepara un borrador con resumen y Markdown completo para revisión. El PDF solo se genera al pulsar «✅ Aprobar y generar PDF». Ver la sección siguiente. Para ofertas antiguas sin botón, responde a su mensaje con `/ajustar_cv` (ya no aparece en el menú). |
 
 El PDF del CV ajustado lleva el botón «✅ Apliqué». Al pulsarlo, el bot registra una copia de la oferta
 y la fecha en `applied_proposals/{posting_id}` y confirma la marca por Telegram. La marca se crea una
@@ -112,21 +112,40 @@ privado y solo si respondes a un mensaje enviado por el bot, pero ya no aparece 
   `job_postings` por `job.url`. Nunca deduce la oferta del título ni del texto. Si no hay una
   identificación única, el bot lo explica y no genera nada; un `/ajustar_cv` sin respuesta recibe
   instrucciones de uso.
-- **Confirmación.** Antes de responder, lee el CV base (`resume_path`), `profiles/current` y la oferta
-  completa, y reclama la versión en Firestore. Si falta alguno de ellos, el bot avisa al momento y no
-  programa trabajo. Si la misma versión ya se está generando, te lo indica sin iniciar otra.
-- **Generación en segundo plano.** Analiza requisitos con el modelo de `llm` (tarea `match`), ajusta el
-  CV (tarea `tailor`), lo renderiza a PDF y sube `cv.pdf`, `resume.md` y `README.md` (análisis,
-  evidencia, brechas, cambios y huellas de las entradas) a `gs://<bucket>/cvs/{posting_id}/{version_id}/…`.
-  Luego te envía el resumen y el PDF como respuesta al mensaje de la oferta. Si algo falla, recibes un
-  aviso genérico (sin contenido del CV ni de la oferta) y puedes volver a pulsar el botón.
-- **Versiones y seguimiento.** `application_tracking/{posting_id}` registra la oferta (etapa `CV_READY`
-  cuando hay artefactos completos; **no** significa que te postulaste) y
-  `application_tracking/{posting_id}/versions/{version_id}` guarda cada versión con sus estados de
-  generación (`PROCESSING`, `READY`, `FAILED`) y entrega (`PENDING`, `SENT`, `FAILED`). Repetir el
-  comando sin cambios en el CV base, el perfil o la oferta reenvía el PDF ya generado sin volver a llamar
-  al LLM; si cambia alguna entrada, se crea una versión nueva y se conserva la anterior. El reclamo
-  expira a los 30 minutos, de modo que una ejecución interrumpida se puede retomar.
+- **Vista previa.** El bot analiza la oferta (`match`) y ajusta el CV (`tailor`), guarda una revisión
+  inmutable y entrega `cv-borrador.md` con el texto completo y un resumen. Lee el documento completo;
+  el resumen puede omitir errores. Todavía no se crea ni envía un PDF.
+- **Corrección factual.** Responde al mensaje o documento de la revisión: «No hablo inglés; elimina
+  English B2». El bot propone el fragmento anterior y el nuevo, e indica el cambio del perfil para
+  futuros CV. Pulsa «✅ Confirmar» para guardarlo o «❌ Rechazar» para descartarlo. Una instrucción
+  ambigua pide precisión y no cambia datos. El hecho confirmado sigue vigente aunque después canceles
+  el borrador, ejecutes `/build-profile` o solicites el CV de otra oferta. El perfil efectivo usado por
+  scoring, preferencias y futuros CV incorpora las correcciones.
+- **Corrección de estilo.** Responde, por ejemplo: «Cambia “Desarrollo soluciones” por “Desarrollo
+  servicios backend”». La propuesta indica «Solo cambia esta versión del CV»; confirmar no modifica
+  el perfil. Corregir aplica cambios puntuales al Markdown guardado, sin repetir el ajuste completo.
+- **Confirmación y aprobación.** Confirmar una corrección publica otra revisión y su documento
+  completo. Revisa esa versión y pulsa «✅ Aprobar y generar PDF». Un botón de aprobación anterior
+  avisa que el borrador cambió. «❌ Cancelar» detiene ese borrador. El PDF se renderiza desde el Markdown
+  exacto de la revisión aprobada; el análisis se actualiza frente a los hechos confirmados.
+- **PDF ya entregado.** Pulsa «✏️ Corregir CV» bajo el PDF para abrir otro borrador desde su Markdown
+  guardado. En un PDF antiguo sin botón, responde al PDF con `/corregir_cv`. Confirma la corrección y
+  aprueba la nueva revisión; la entrega anterior permanece como versión histórica. El botón
+  «✅ Apliqué» sigue registrando la postulación explícitamente.
+- **Revocar un dato confirmado.** Abre un borrador (o corrige un PDF) y responde, por ejemplo:
+  «Revoco la corrección anterior de inglés; sí hablo inglés B2. Cambia “Idiomas: español” por
+  “Idiomas: español e inglés B2”». Revisa la propuesta factual antes de confirmar: la revocación debe
+  identificar una corrección activa sin ambigüedad. El historial se conserva y el perfil se recalcula
+  desde su inferencia base con las correcciones que sigan activas. Si falta un fragmento concreto o
+  no se identifica la corrección, el bot pide precisión.
+- **Versiones y reintentos.** Los borradores y propuestas viven en `cv_reviews`; cada revisión tiene
+  Markdown privado e inmutable. Las correcciones globales tienen historial en `profile_corrections`
+  y una proyección efectiva en `profiles/current`; `resume/base.md` no se edita desde Telegram.
+  `application_tracking/{posting_id}/versions/{version_id}` conserva los artefactos y recibos de
+  entrega. Si falla el renderizado o envío, vuelve a aprobar la misma revisión: se reutiliza el
+  Markdown aprobado, sin ajustar otra vez con el modelo. Una corrección factual cambia la versión de
+  los CV futuros. Si falla la recompilación del plan de búsqueda, el bot lo indica y la corrección
+  permanece guardada.
 
 **Configuración previa al despliegue:**
 
@@ -145,7 +164,12 @@ privado y solo si respondes a un mensaje enviado por el bot, pero ya no aparece 
    imagen del servicio. Sin ellas la generación falla y el bot avisa del fallo.
 5. **CV base y modelo.** El archivo `resume_path` de `config.yaml` debe estar disponible para el
    servicio, y la clave del proveedor de `llm` (tareas `match` y `tailor`) configurada.
-6. **Menú del bot.** Vuelve a ejecutar `.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>`
+6. **Recuperación de PDFs antiguos.** Configura un índice de **campo único con alcance de grupo de
+   colecciones** para el grupo `versions`, campo `pdf_message_id` (orden ascendente). La búsqueda
+   usa `collection_group("versions")` y filtra por ese recibo; el índice automático con alcance de
+   colección no basta. Si falta, `/corregir_cv` explica qué índice debe configurar el administrador
+   y permite reintentar sin alterar el PDF ni el estado guardado.
+7. **Menú del bot.** Vuelve a ejecutar `.venv/bin/python -m job_agent set-telegram-webhook https://<tu-servicio>`
    para actualizar el menú de comandos (`/ajustar_cv` ya no aparece; las ofertas nuevas traen el botón).
 
 La generación no usa el bloqueo de la evaluación de ofertas: no la detiene ni cambia el estado

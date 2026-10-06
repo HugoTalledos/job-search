@@ -98,3 +98,16 @@ class ManageSearchPreferences:
         if not self.store.save_plan_if_version(plan, preferences.version):
             return RebuildResult(status="superseded")  # an Apply committed meanwhile and wrote its own plan
         return RebuildResult(status="rebuilt", plan=plan)
+
+    def after_profile_change(self, notify: Callable[[str], None]) -> RebuildResult | None:
+        """Postcommit hook for confirmed facts or profile rebuilds; safe to retry.
+
+        Call only after the transaction publishing the effective profile succeeds.
+        A plan failure keeps the fact committed and returns a user-visible retry notice.
+        """
+        try:
+            return self.rebuild_plan()
+        except Exception:
+            notify("Tu perfil se guardó, pero no pude actualizar el plan de búsqueda. "
+                   "Puedes reintentar la actualización del plan.")
+            return None

@@ -48,3 +48,20 @@ class FirebaseCvArtifactStore:
         if not artifacts.pdf_uri.startswith(prefix) or not artifacts.pdf_uri[len(prefix):]:
             raise ValueError('CV artifact must belong to the configured private bucket')
         return self.bucket.blob(artifacts.pdf_uri[len(prefix):]).download_as_bytes()
+
+    def save_markdown(self, review_id: str, revision_id: str, markdown: str) -> str:
+        for value in (review_id, revision_id):
+            if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16}', value):
+                raise ValueError('Review and revision IDs must be 16 URL-safe characters')
+        path = f'cv_reviews/{review_id}/{revision_id}/resume.md'
+        self.bucket.blob(path).upload_from_string(
+            markdown, content_type='text/markdown; charset=utf-8', if_generation_match=0,
+        )
+        return f'gs://{self.bucket_name}/{path}'
+
+    def read_markdown(self, uri: str) -> str:
+        prefix = f'gs://{self.bucket_name}/'
+        if not uri.startswith(prefix) or not uri[len(prefix):]:
+            raise ValueError('CV artifact must belong to the configured private bucket')
+        content = self.bucket.blob(uri[len(prefix):]).download_as_bytes()
+        return content.decode('utf-8') if isinstance(content, bytes) else content

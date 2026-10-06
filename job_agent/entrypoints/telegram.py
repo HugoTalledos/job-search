@@ -15,7 +15,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from ..application import GenerateTailoredCv
-from ..application.cv_models import PreparedCvRequest
+from ..application.cv_models import PreparedCvRequest, LegacyCvLookupUnavailable
 from ..application.manage_search_preferences import ManageSearchPreferences
 from ..application.preference_models import DraftResolution, PreferencesView, Proposal
 from ..scoring.models import ADJUST_CV_CALLBACK
@@ -35,7 +35,8 @@ RESENDING_PENDING = "Estoy buscando propuestas que hayan quedado pendientes de n
 ALREADY_RESENDING = "Ya estoy reenviando las propuestas pendientes."
 HELP = ("Comandos disponibles:\n/build_profile — construir tu perfil profesional"
         "\n/resend_pending — reintentar las notificaciones pendientes"
-        "\n📄 Ajustar CV — botón bajo cada oferta para recibir un CV ajustado en PDF"
+        "\n📄 Ajustar CV — botón bajo cada oferta para revisar y aprobar tu CV antes del PDF"
+        "\n/corregir_cv — responde a un PDF para corregir el CV"
         "\n/preferencias — ver o cambiar el tipo de ofertas que busco")
 CV_ACCEPTED = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
 CV_IN_PROGRESS = "Ya estoy ajustando tu CV para esta propuesta; te enviaré el PDF al terminar."
@@ -133,6 +134,7 @@ def add_telegram_webhook(
     offer_messages: OfferMessageIndex,
     preferences: ManageSearchPreferences,
     preferences_chat: PreferencesChat,
+    cv_reviews=None,
     applied_proposals: AppliedProposalStore | None = None,
     execution_lock: LockType | None = None,
     bot_id: int | None = None,
@@ -222,6 +224,9 @@ def add_telegram_webhook(
         callback_id = callback_id if isinstance(callback_id, str) and callback_id else None
         message = query.get("message")
         data = query.get("data")
+        if isinstance(data, str) and data.startswith('cv:') and data != ADJUST_CV_CALLBACK:
+            handle_review_button(callback_id, message, query.get('from'), data, background_tasks)
+            return
         if data == ADJUST_CV_CALLBACK:
             handle_cv_button(callback_id, message, query.get("from"), background_tasks)
             return
@@ -285,6 +290,95 @@ def add_telegram_webhook(
         finally:
             resend_lock.release()
 
+    def run_review(action, review_id, other_id, message_id):
+        try:
+            review = cv_reviews.reviews.load(review_id, chat_id)
+            if action == 'draft':
+                cv_reviews.generate_draft(review_id, chat_id)
+                cv_reviews.show_preview(review_id, chat_id, message_id)
+            elif action == 'approve':
+                cv_reviews.approve(review_id, other_id, chat_id, reply_to_message_id=message_id)
+            elif action == 'edit':
+                if review.status != 'DRAFT':
+                    raise ValueError('Inactive review')
+                notify('Responde al mensaje de revisión con el cambio concreto que deseas hacer.')
+            elif action == 'cancel':
+                cv_reviews.reviews.cancel(review_id, chat_id)
+                notify('Borrador cancelado. Los datos ya confirmados siguen vigentes.')
+            elif action == 'confirm':
+                cv_reviews.confirm_edit(review_id, other_id, chat_id)
+                cv_reviews.show_preview(review_id, chat_id, message_id)
+            elif action == 'reject':
+                cv_reviews.reject_edit(review_id, other_id, chat_id)
+                notify('Corrección rechazada.')
+            elif action == 'correct':
+                ready = cv_generator.tracking.find_ready_by_pdf_message(message_id)
+                if ready is None or ready.key.review_id != review_id:
+                    raise ValueError('Unknown delivered CV')
+                opened = cv_reviews.open_delivered(ready, chat_id, datetime.now(timezone.utc))
+                cv_reviews.show_preview(opened.review_id, chat_id, message_id)
+        except ValueError:
+            notify('El borrador cambió o la acción ya no es válida. Usa la revisión más reciente.')
+        except Exception as exc:
+            log.error('No se pudo completar la revisión del CV (%s)', type(exc).__name__)
+            notify('No pude completar la revisión. Reintenta con el mismo botón; la revisión aprobada se conserva.')
+
+    def handle_review_button(callback_id, message, sender, data, background_tasks):
+        match = re.fullmatch(r'cv:(approve|edit|cancel|confirm|reject|correct):([A-Za-z0-9_-]{16})(?::([A-Za-z0-9_-]{16}))?', data)
+        if (cv_reviews is None or callback_id is None or match is None
+                or not _is_private_from(message, sender, chat_id)
+                or type(message.get('message_id')) is not int
+                or ((match[1] in {'approve', 'confirm', 'reject'}) != (match[3] is not None))):
+            if callback_id:
+                answer(callback_id, CALLBACK_INVALID)
+            return
+        # Acknowledge before Firestore, model, renderer or delivery work.
+        answer(callback_id, 'Procesando revisión…')
+        background_tasks.add_task(run_review, match[1], match[2], match[3], message['message_id'])
+
+    def run_edit_reply(review_id, revision_id, text, message_id):
+        try:
+            review = cv_reviews.reviews.load(review_id, chat_id)
+            if review.active_revision_id != revision_id or review.status != 'DRAFT':
+                notify('El borrador cambió. Responde a la revisión más reciente.')
+                return
+            proposal = cv_reviews.propose_edit(review_id, chat_id, text)
+            before = '\n\n'.join(r.old_text for r in proposal.replacements)
+            after = '\n\n'.join(r.new_text for r in proposal.replacements)
+            if proposal.fact_operations:
+                labels = {
+                    'remove_language': 'Eliminar idioma', 'set_language': 'Establecer idioma y nivel',
+                    'remove_skill': 'Eliminar habilidad', 'set_skill_level': 'Establecer nivel de habilidad',
+                    'set_seniority': 'Establecer seniority', 'set_years_of_experience': 'Establecer años de experiencia',
+                    'deny_claim': 'Excluir afirmación', 'revoke': 'Revocar corrección anterior',
+                }
+                after += '\n\nCambio propuesto del perfil para futuros CV:\n' + '\n'.join(
+                    f'{labels[op.kind]}: {op.subject}' + (f' → {op.value}' if op.value is not None else '')
+                    for op in proposal.fact_operations)
+            cv_generator.delivery.send_edit_proposal(chat_id, message_id, review_id,
+                proposal.proposal_id, before, after, 'global' if proposal.fact_operations else 'local')
+        except ValueError:
+            notify('Precisa el fragmento y el dato que deseas corregir. No se guardaron cambios.')
+        except Exception as exc:
+            log.error('No se pudo proponer la corrección (%s)', type(exc).__name__)
+            notify('No pude preparar la corrección. Inténtalo de nuevo; no se guardaron cambios.')
+
+    def run_open_pdf(message_id):
+        try:
+            ready = cv_generator.tracking.find_ready_by_pdf_message(message_id)
+            if ready is None:
+                notify('No encontré un CV guardado para ese mensaje. Responde al PDF enviado por el bot.')
+                return
+            review = cv_reviews.open_delivered(ready, chat_id, datetime.now(timezone.utc))
+            cv_reviews.show_preview(review.review_id, chat_id, message_id)
+        except LegacyCvLookupUnavailable:
+            notify('La búsqueda de PDFs antiguos requiere el índice de campo único de grupo de colecciones '
+                   'versions.pdf_message_id en Firestore. Avisa al administrador y vuelve a intentar '
+                   '/corregir_cv; tu PDF sigue guardado.')
+        except Exception as exc:
+            log.error('No se pudo abrir el CV guardado (%s)', type(exc).__name__)
+            notify('No pude abrir el CV guardado. Inténtalo de nuevo.')
+
     def run_cv(prepared: PreparedCvRequest, offer_message_id: int) -> None:
         try:
             cv_generator.execute(prepared, chat_id, offer_message_id)
@@ -312,8 +406,24 @@ def add_telegram_webhook(
             return False
         return bot_id is None or author.get("id") == bot_id
 
+    def start_review(offer):
+        try:
+            posting_id = offer_posting_id(offer)
+            if posting_id is None:
+                notify(CV_UNKNOWN_OFFER)
+                return
+            review = cv_reviews.prepare(posting_id, chat_id, datetime.now(timezone.utc))
+            run_review('draft', review.review_id, None, offer['message_id'])
+        except Exception as exc:
+            log.error('No se pudo preparar el borrador (%s)', type(exc).__name__)
+            notify(CV_NOT_STARTED)
+
     def start_cv(offer: dict, background_tasks: BackgroundTasks) -> str:
         """Claim and schedule the CV for an offer message; returns a short status for button presses."""
+        if cv_reviews is not None:
+            background_tasks.add_task(start_review, offer)
+            notify('Estoy preparando el borrador del CV para que lo revises antes de generar el PDF.')
+            return CV_BUTTON_ACCEPTED
         try:
             posting_id = offer_posting_id(offer)
             prepared = None if posting_id is None else cv_generator.prepare(posting_id, datetime.now(timezone.utc))
@@ -343,11 +453,9 @@ def add_telegram_webhook(
             if callback_id is not None:
                 answer(callback_id, CALLBACK_INVALID)
             return
-        status = CV_BUTTON_NOT_STARTED
-        try:
-            status = start_cv(message, background_tasks)
-        finally:
-            answer(callback_id, status)
+        # Acknowledge before any storage access or potentially slow chat notification.
+        answer(callback_id, CV_BUTTON_ACCEPTED)
+        start_cv(message, background_tasks)
 
     def handle_adjust_cv(message: dict, background_tasks: BackgroundTasks) -> None:
         """``/ajustar_cv`` as a reply, kept for offer messages sent before they carried the button."""
@@ -390,6 +498,24 @@ def add_telegram_webhook(
         text = message.get("text")
         if not isinstance(text, str):
             return
+        if cv_reviews is not None and _command(text) == '/corregir_cv':
+            if not _is_private_from(message, message.get('from'), chat_id):
+                return
+            replied = message.get('reply_to_message')
+            if not isinstance(replied, dict) or not sent_by_this_bot(replied) or type(replied.get('message_id')) is not int:
+                notify('Responde al PDF enviado por el bot con /corregir_cv.')
+                return
+            background_tasks.add_task(run_open_pdf, replied['message_id'])
+            return
+        if cv_reviews is not None and not text.lstrip().startswith('/'):
+            replied = message.get('reply_to_message')
+            if (_is_private_from(message, message.get('from'), chat_id)
+                    and isinstance(replied, dict) and sent_by_this_bot(replied)
+                    and type(replied.get('message_id')) is int):
+                mapping = cv_reviews.reviews.resolve_preview(chat_id, replied['message_id'])
+                if mapping:
+                    background_tasks.add_task(run_edit_reply, *mapping, text, replied['message_id'])
+                    return
         if _command(text) == ADJUST_CV_COMMAND:
             handle_adjust_cv(message, background_tasks)
             return

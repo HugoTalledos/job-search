@@ -24,8 +24,11 @@ class Snapshot:
 class Document:
     def __init__(self, client, collection, doc_id):
         self.client, self.collection, self.id = client, collection, doc_id
+        self.path = f"{collection}/{doc_id}"
 
-    def get(self):
+    def get(self, transaction=None):
+        if transaction is not None:
+            transaction.reads[f"{self.collection}/{self.id}"] = self.client.revisions.get(f"{self.collection}/{self.id}", 0)
         return Snapshot(self.id, self.client.docs.get(f"{self.collection}/{self.id}"))
 
     def update(self, fields):
@@ -49,9 +52,12 @@ class Collection:
         )
 
 
-class FakeFirestoreClient:
+from tests.adapters.test_firestore_cv_tracking import Client as TransactionClient
+
+
+class FakeFirestoreClient(TransactionClient):
     def __init__(self):
-        self.docs = {}
+        super().__init__()
 
     def collection(self, name):
         return Collection(self, name)
@@ -223,7 +229,7 @@ def test_telegram_build_profile_command_stores_profile_for_scoring(webhook, monk
         def __init__(self, model):
             pass
 
-        def infer(self, resume_text, evidence, preferred_locations):
+        def infer(self, resume_text, evidence, preferred_locations, **kwargs):
             return profile
 
     monkeypatch.setattr(webhook, "GitRepositoryReader", FakeRepositories)
@@ -342,12 +348,12 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
     resume = tmp_path / "base.md"
     resume.write_text("Base CV: Python")
     monkeypatch.setattr(webhook, "load_config", lambda: Config(resume_path=str(resume)))
-    client = FakeFirestoreClient()
+    client = TransactionalClient()
     client.docs["profiles/current"] = profile.model_dump()
     client.docs["telegram_offer_messages/42_91"] = {"posting_id": "original"}
     monkeypatch.setattr(webhook.firestore, "Client", lambda **kwargs: client)
     # The scoring fake has no transactions; claims use the transactional fake with the same posting.
-    tracking_client = TransactionalClient()
+    tracking_client = client
     tracking_client.docs["job_postings/original"] = {"job": job.model_dump(), "status": "NOTIFIED"}
     monkeypatch.setattr(webhook, "FirestoreCvTrackingStore", lambda c: FirestoreCvTrackingStore(tracking_client))
     llm_calls, delivered, messages = [], [], []
@@ -358,15 +364,22 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
     monkeypatch.setattr(webhook, "RequiredPdfRenderer", lambda: type("Renderer", (), {
         "render": lambda self, markdown: b"%PDF-wired"})())
 
+    previews = []
+
     class FakeDelivery:
         def __init__(self, token):
             assert token == "telegram-fixture-token"
+
+        def send_preview(self, chat_id, reply_to, review_id, revision_id, summary, markdown):
+            from job_agent.adapters.notifications.telegram_cv import PreviewReceipt
+            previews.append((review_id, revision_id, markdown))
+            return PreviewReceipt(303, 304)
 
         def send_summary(self, chat_id, reply_to, summary):
             delivered.append(("summary", chat_id, reply_to))
             return 301
 
-        def send_pdf(self, chat_id, reply_to, pdf, posting_id):
+        def send_pdf(self, chat_id, reply_to, pdf, posting_id, *, review_id):
             delivered.append(("pdf", chat_id, reply_to, pdf, posting_id))
             return 302
 
@@ -384,12 +397,20 @@ def test_telegram_cv_reply_generates_and_delivers_through_the_wired_adapters(
     assert reply(31).status_code == 200
     assert reply(32).status_code == 200
 
-    ack = "Estoy ajustando tu CV para esta propuesta. Te enviaré el PDF al terminar."
-    assert messages == [ack, ack]
-    assert llm_calls == ["match", "tailor"]
-    assert delivered.count(("pdf", "42", 91, b"%PDF-wired", "original")) == 2
-    tracking = tracking_client.docs["application_tracking/original"]
-    assert tracking["stage"] == "CV_READY"
+    assert len(previews) == 2
+    assert previews[0] == previews[1]
+    assert previews[0][2] == tailored.resume_markdown
+    assert delivered == []
+    assert llm_calls == ['match', 'tailor']
+    review_id, revision_id, _ = previews[-1]
+    monkeypatch.setattr(webhook.TelegramPreferencesChat, 'answer', lambda *a: None)
+    approval = {'callback_query': {'id':'approve', 'data':f'cv:approve:{review_id}:{revision_id}',
+        'from': {'id':42}, 'message': {'message_id':303, 'chat': {'id':42,'type':'private'}}}}
+    headers = {'X-Telegram-Bot-Api-Secret-Token':'telegram-secret'}
+    assert http.post('/webhooks/telegram',headers=headers,json=approval).status_code == 200
+    assert http.post('/webhooks/telegram',headers=headers,json=approval).status_code == 200
+    assert delivered.count(('pdf', '42', 303, b'%PDF-wired', 'original')) == 1
+    assert tracking_client.docs['application_tracking/original']['stage'] == 'CV_READY'
 
 
 @pytest.mark.parametrize("token, bot_id", [("123456:ABC-def", 123456), ("telegram-fixture-token", None), ("", None)])
@@ -468,3 +489,135 @@ def test_preferences_flow_end_to_end_through_the_wired_webhook(webhook, monkeypa
     assert plan["preferences_version"] == 2
     assert client.docs["settings/search_preferences"]["version"] == 2
     assert [m for m, _ in telegram_calls[-2:]] == ["answerCallbackQuery", "editMessageText"]
+
+
+def test_cv_review_production_dependencies_are_wired(webhook, monkeypatch):
+    captured={}
+    monkeypatch.setattr(webhook,'add_telegram_webhook',lambda app, **kwargs: captured.update(kwargs))
+    webhook.build_webhook_app()
+    service=captured['cv_reviews']
+    from job_agent.application.cv_review import CvReviewService
+    from job_agent.adapters.persistence.firestore_cv_reviews import FirestoreCvReviewStore
+    from job_agent.adapters.persistence.firestore_profile_corrections import FirestoreProfileCorrections
+    from job_agent.adapters.llm.cv_edit import CvEditInterpreter
+    assert isinstance(service,CvReviewService)
+    assert isinstance(service.reviews,FirestoreCvReviewStore)
+    assert isinstance(service.corrections,FirestoreProfileCorrections)
+    assert isinstance(service.interpreter,CvEditInterpreter)
+    assert service.generation is captured['cv_generator']
+    assert service.after_profile_change.__self__ is captured['preferences']
+    assert service.after_profile_change.__name__ == 'after_profile_change'
+    assert service.notify.__self__ is captured['messenger']
+
+
+def test_confirmed_language_denial_survives_profile_rebuild_and_later_cv(
+    webhook, monkeypatch, tmp_path, profile, job, match, tailored, caplog
+):
+    from types import SimpleNamespace
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    from job_agent.domain.cv_corrections import FactOperation
+    from job_agent.adapters.notifications.telegram_cv import PreviewReceipt
+    from job_agent.scoring.firestore import FirestoreScoringStore
+    from tests.adapters.test_firestore_cv_tracking import Client
+
+    inferred = profile.model_copy(update={'languages': ['English (B2)', 'Español (nativo)']})
+    client = Client()
+    client.docs['profiles/current'] = inferred.model_dump()
+    for posting_id, message_id in [('original', 91), ('later', 92)]:
+        client.docs[f'job_postings/{posting_id}'] = {'job': job.model_dump(), 'status': 'NOTIFIED'}
+        client.docs[f'telegram_offer_messages/42_{message_id}'] = {'posting_id': posting_id}
+    resume = tmp_path / 'base.md'
+    resume.write_text('# Test\nEnglish B2\nPython')
+    monkeypatch.setattr(webhook, 'load_config', lambda: Config(resume_path=str(resume)))
+    monkeypatch.setattr(webhook.firestore, 'Client', lambda **kwargs: client)
+    previews, proposals, rendered, pdfs, profiles_seen, notices = [], [], [], [], [], []
+    corrected = '# Test\nPython'
+    monkeypatch.setattr(webhook, 'LlmJobMatcher', lambda model: SimpleNamespace(score=lambda *args, **kwargs: match))
+
+    def tailor(*args, **kwargs):
+        profiles_seen.append(args[2])
+        markdown = '# Test\nEnglish B2\nPython' if len(profiles_seen) == 1 else corrected
+        return tailored.model_copy(update={'resume_markdown': markdown})
+
+    monkeypatch.setattr(webhook, 'LlmResumeTailor', lambda model: SimpleNamespace(tailor=tailor))
+    monkeypatch.setattr(webhook, 'CvEditInterpreter', lambda model: SimpleNamespace(propose=lambda *args: CvEditProposal(
+        replacements=[TextReplacement(old_text='English B2\n', new_text='')],
+        fact_operations=[FactOperation('remove_language', 'English')], explanation='Dato confirmado')))
+    monkeypatch.setattr(webhook, 'RequiredPdfRenderer', lambda: SimpleNamespace(
+        render=lambda markdown: rendered.append(markdown) or markdown.encode()))
+
+    class Delivery:
+        def __init__(self, token):
+            pass
+
+        def send_preview(self, chat_id, reply_to, review_id, revision_id, summary, markdown):
+            previews.append((review_id, revision_id, markdown))
+            return PreviewReceipt(300 + len(previews), 400 + len(previews))
+
+        def send_edit_proposal(self, *args):
+            proposals.append(args)
+            return 501
+
+        def send_summary(self, *args):
+            return 601
+
+        def send_pdf(self, chat_id, reply_to, pdf, posting_id, *, review_id):
+            pdfs.append(pdf)
+            if len(pdfs) == 1:
+                raise RuntimeError('sensitive transport detail')
+            return 602
+
+    monkeypatch.setattr(webhook, 'TelegramCvDelivery', Delivery)
+    monkeypatch.setattr(webhook.TelegramNotifier, 'send_text', lambda self, text: notices.append(text))
+    monkeypatch.setattr(webhook.TelegramPreferencesChat, 'answer', lambda *args: None)
+    monkeypatch.setattr(webhook, 'GitRepositoryReader', lambda **kwargs: SimpleNamespace(list_repositories=lambda: []))
+    rebuilds = []
+
+    def infer(*args, **kwargs):
+        rebuilds.append(kwargs.get('corrections'))
+        return inferred
+
+    monkeypatch.setattr(webhook, 'LlmProfileInferer', lambda model: SimpleNamespace(infer=infer))
+    http = TestClient(webhook.build_webhook_app())
+    headers = {'X-Telegram-Bot-Api-Secret-Token': 'telegram-secret'}
+
+    def post(text=None, reply=None, data=None):
+        message = {'message_id': 700, 'chat': {'id': 42, 'type': 'private'}, 'from': {'id': 42}}
+        if data:
+            payload = {'callback_query': {'id': 'callback', 'data': data, 'from': {'id': 42}, 'message': message}}
+        else:
+            message['text'] = text
+            if reply:
+                message['reply_to_message'] = {'message_id': reply, 'from': {'id': 1, 'is_bot': True}}
+            payload = {'message': message}
+        assert http.post('/webhooks/telegram', headers=headers, json=payload).status_code == 200
+
+    post('/ajustar_cv', 91)
+    review, first, markdown = previews[-1]
+    assert 'English B2' in markdown
+    assert rendered == pdfs == []
+    post('No hablo inglés; elimina English B2', 301)
+    assert 'futuros CV' in proposals[-1][-2]
+    assert FirestoreScoringStore(client).load().languages == inferred.languages
+    proposal_id = proposals[-1][3]
+    post(data=f'cv:confirm:{review}:{proposal_id}')
+    _, revision, markdown = previews[-1]
+    assert revision != first and markdown == corrected
+    effective = FirestoreScoringStore(client).load()
+    assert effective.languages == ['Español (nativo)']
+    post(data=f'cv:approve:{review}:{first}')
+    assert rendered == []
+    post(data=f'cv:approve:{review}:{revision}')
+    assert rendered == [corrected] and pdfs == [corrected.encode()]
+    post(data=f'cv:approve:{review}:{revision}')
+    assert rendered == [corrected] and pdfs == [corrected.encode(), corrected.encode()]
+    assert len(profiles_seen) == 1
+    assert 'sensitive transport detail' not in caplog.text
+    post('/build-profile')
+    assert len(rebuilds) == 1
+    assert FirestoreScoringStore(client).load().languages == ['Español (nativo)']
+    assert 'English (B2)' in client.docs['profiles/current']['inferred_profile']['languages']
+    post('/ajustar_cv', 92)
+    assert previews[-1][2] == corrected
+    assert profiles_seen[-1].languages == ['Español (nativo)']
+    assert len(profiles_seen) == 2
