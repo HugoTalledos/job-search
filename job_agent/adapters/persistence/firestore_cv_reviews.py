@@ -91,3 +91,19 @@ class FirestoreCvReviewStore:
             transaction.set(ref, {**data, 'approved_revision_id': revision_id, 'status': 'APPROVED'})
             return ApprovalResult('approved', revision)
         return approve(self.client.transaction())
+
+    def save_context(self, review_id, context):
+        self.reviews.document(review_id).collection('context').document('inputs').set(context)
+
+    def load_context(self, review_id):
+        data = self.reviews.document(review_id).collection('context').document('inputs').get().to_dict()
+        if not data:
+            raise LookupError('Review context is missing')
+        return data
+
+    def load_revision(self, review_id, revision_id, chat_id):
+        self.load(review_id, chat_id)
+        data = self.reviews.document(review_id).collection('revisions').document(revision_id).get().to_dict()
+        if not data:
+            raise LookupError('Review revision is missing')
+        return CvRevision(**data)

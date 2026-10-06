@@ -117,7 +117,9 @@ class GenerateTailoredCv:
             requested_at=now, attempt_id=claim.attempt_id,
         )
 
-    def execute(self, prepared: PreparedCvRequest, chat_id: str, reply_to_message_id: int) -> CvGenerationResult:
+    def execute(self, prepared: PreparedCvRequest, chat_id: str, reply_to_message_id: int, *,
+                approved_match: JobMatch | None = None, approved_tailored: TailoredResume | None = None,
+                resend: bool = True) -> CvGenerationResult:
         if prepared.action == 'in_progress':
             return CvGenerationResult(prepared.key, 'PROCESSING', 'PENDING')
         key = prepared.key
@@ -125,8 +127,8 @@ class GenerateTailoredCv:
             if not prepared.attempt_id:
                 raise ValueError('CV generation requires a claimed attempt')
             try:
-                match = self.matcher.score(prepared.posting, prepared.profile, prepared.resume_text)
-                tailored = self.tailor.tailor(prepared.posting, match, prepared.profile, prepared.resume_text)
+                match = approved_match or self.matcher.score(prepared.posting, prepared.profile, prepared.resume_text)
+                tailored = approved_tailored or self.tailor.tailor(prepared.posting, match, prepared.profile, prepared.resume_text)
                 if not tailored.resume_markdown.strip():
                     raise ValueError('Tailored resume is empty')
                 pdf = self.renderer.render(tailored.resume_markdown)
@@ -145,7 +147,7 @@ class GenerateTailoredCv:
         # A Telegram or download failure must never invalidate complete generation artifacts.
         try:
             ready = self.tracking.load_ready(key)
-            if ready.delivery_status == 'SENT':
+            if ready.delivery_status == 'SENT' and resend:
                 self.tracking.begin_delivery(key)
                 ready = self.tracking.load_ready(key)
             if ready.summary_message_id is None:

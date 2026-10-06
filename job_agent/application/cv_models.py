@@ -22,6 +22,8 @@ class CvVersionKey:
     profile_fingerprint: str
     job_fingerprint: str
     corrections_version: int = 0
+    review_id: str | None = None
+    revision_id: str | None = None
 
     @property
     def version_id(self) -> str:
@@ -29,6 +31,8 @@ class CvVersionKey:
         inputs = [self.posting_id, self.resume_fingerprint, self.profile_fingerprint, self.job_fingerprint]
         if self.corrections_version:
             inputs.append(self.corrections_version)
+        if self.review_id or self.revision_id:
+            inputs.extend([self.review_id, self.revision_id])
         return hashlib.sha256(json.dumps(inputs, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
