@@ -53,3 +53,12 @@ def test_correction_version_preserves_legacy_hash():
 def test_review_requires_private_chat(chat_id):
     with pytest.raises(ValueError):
         FirestoreCvReviewStore(Client()).create_or_resume('offer', chat_id, CvVersionKey('offer', 'r', 'p', 'j'))
+
+
+def test_review_and_revision_identifiers_fit_callbacks():
+    import re
+    store = FirestoreCvReviewStore(Client())
+    review = store.create_or_resume('offer', '123', CvVersionKey('offer', 'r', 'p', 'j'))
+    revision = store.publish_revision(review.review_id, None, 'gs://private/a.md', None)
+    assert re.fullmatch(r'[A-Za-z0-9_-]{16}', review.review_id)
+    assert re.fullmatch(r'[A-Za-z0-9_-]{16}', revision.revision_id)

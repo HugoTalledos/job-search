@@ -3,7 +3,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-from uuid import uuid4
+from secrets import token_urlsafe
 from google.cloud import firestore
 from ...application.cv_models import CvVersionKey
 from ...application.cv_review_models import ApprovalResult, CvReview, CvRevision
@@ -35,7 +35,7 @@ class FirestoreCvReviewStore:
             data = self.reviews.document(index['review_id']).get(transaction=transaction).to_dict() if index else None
             if data and data['status'] == 'DRAFT':
                 return self._review(data)
-            review = CvReview(uuid4().hex, posting_id, chat_id, key)
+            review = CvReview(token_urlsafe(12), posting_id, chat_id, key)
             transaction.set(self.reviews.document(review.review_id), asdict(review))
             transaction.set(ref, {'review_id': review.review_id})
             return review
@@ -61,8 +61,8 @@ class FirestoreCvReviewStore:
         data = ref.get(transaction=transaction).to_dict()
         if not data or data['status'] != 'DRAFT' or data['active_revision_id'] != expected_revision_id:
             raise StaleCvRevision('Draft changed; reload its active revision')
-        # URI identifies the immutable object uploaded before this transaction.
-        revision_id = sha256(markdown_uri.encode()).hexdigest()
+        # The immutable object was uploaded before this transaction; callbacks use a compact random ID.
+        revision_id = token_urlsafe(12)
         revision_ref = ref.collection('revisions').document(revision_id)
         if revision_ref.get(transaction=transaction).exists:
             raise StaleCvRevision('An immutable revision cannot be republished')

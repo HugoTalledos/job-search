@@ -51,8 +51,8 @@ class FirebaseCvArtifactStore:
 
     def save_markdown(self, review_id: str, revision_id: str, markdown: str) -> str:
         for value in (review_id, revision_id):
-            if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', value):
-                raise ValueError('Review and revision IDs must be safe path components')
+            if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16}', value):
+                raise ValueError('Review and revision IDs must be 16 URL-safe characters')
         path = f'cv_reviews/{review_id}/{revision_id}/resume.md'
         self.bucket.blob(path).upload_from_string(
             markdown, content_type='text/markdown; charset=utf-8', if_generation_match=0,
