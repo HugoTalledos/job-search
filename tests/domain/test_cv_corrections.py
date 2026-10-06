@@ -97,3 +97,37 @@ def test_short_denied_claim_matches_only_whole_term():
 
 def test_language_alias_denial_matches_canonical_cv_language():
     assert contradictions('English (B2)', [FactOperation('deny_claim', 'inglés')]) == ['english']
+
+
+@pytest.mark.parametrize('markdown, operation', [
+    ('Languages: English C1; French B2', FactOperation('set_language', 'english', 'C1')),
+    ('Languages: English C1, French B2', FactOperation('set_language', 'english', 'C1')),
+    ('Skills: Python advanced; Java basic', FactOperation('set_skill_level', 'Python', 'advanced')),
+])
+def test_substitution_checks_only_the_named_fact_segment(markdown, operation):
+    assert contradictions(markdown, [operation]) == []
+
+
+def test_segmented_wrong_level_still_contradicts():
+    assert contradictions('Languages: French C1; English B2', [
+        FactOperation('set_language', 'english', 'C1')]) == ['english']
+
+
+@pytest.mark.parametrize('kind', ['remove_skill', 'set_skill_level'])
+@pytest.mark.parametrize('subject', ['Python or Java', 'Python o Java', 'Python/Java', 'Python, Java', 'Python and Java'])
+def test_skill_operation_rejects_multiple_or_ambiguous_targets(kind, subject):
+    with pytest.raises(ValidationError):
+        FactOperation(kind, subject, 'basic' if kind == 'set_skill_level' else None)
+
+
+@pytest.mark.parametrize('value', [True, False])
+def test_experience_rejects_boolean_before_numeric_coercion(value):
+    with pytest.raises(ValidationError):
+        FactOperation('set_years_of_experience', 'years_of_experience', value)
+
+
+def test_skill_update_rejects_duplicate_normalized_skill_names():
+    base = profile()
+    base.skills.append(Skill(name='PYTHON', level='basic', evidence='Other repo'))
+    with pytest.raises(ValueError):
+        apply_fact_operations(base, [FactOperation('set_skill_level', 'python', 'expert')])

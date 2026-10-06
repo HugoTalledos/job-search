@@ -11,7 +11,7 @@ import re
 import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from job_agent.domain.models import Profile
 
@@ -70,6 +70,13 @@ class FactOperation(BaseModel):
         data['value'] = value
         super().__init__(**data)
 
+    @field_validator('value', mode='before')
+    @classmethod
+    def reject_boolean_value(cls, value):
+        if isinstance(value, bool):
+            raise ValueError('Boolean values are not candidate fact values')
+        return value
+
     @model_validator(mode='after')
     def validate_fact(self):
         subject = self.subject.strip()
@@ -79,6 +86,11 @@ class FactOperation(BaseModel):
             subject = _language(subject)
         elif self.kind != 'revoke':
             subject = _normalize(subject)
+        if self.kind in {'remove_skill', 'set_skill_level'}:
+            # One normalized name per operation; multi-target instructions need
+            # separate operations after the interpreter resolves their intent.
+            if re.search(r'\b(?:or|and|o|y)\b|[,;/|&\n]', subject):
+                raise ValueError('Skill subject must identify one unambiguous name')
         if self.kind in {'remove_language', 'remove_skill', 'deny_claim', 'revoke'}:
             if self.value is not None:
                 raise ValueError('This operation cannot carry a value')
@@ -158,10 +170,10 @@ def contradictions(markdown: str, operations: list[FactOperation]) -> list[str]:
                 found.append(subject)
         elif operation.kind in {'set_language', 'set_skill_level'}:
             # A substitution is contradictory only when a different explicit level
-            # accompanies the same named fact on its CV line.
+            # accompanies the same named fact in its CV segment.
             levels = _LEVELS if operation.kind == 'set_language' else _SKILL_LEVELS
-            for line in markdown.splitlines():
-                normalized = _normalize(line)
+            for segment in re.split(r'[\n;,|]', markdown):
+                normalized = _normalize(segment)
                 if any(_contains(normalized, alias) for alias in aliases) and any(
                     level != operation.value and _contains(normalized, _normalize(level)) for level in levels
                 ):
