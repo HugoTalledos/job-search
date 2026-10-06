@@ -79,6 +79,8 @@ class FactOperation(BaseModel):
 
     @model_validator(mode='after')
     def validate_fact(self):
+        if self.kind in {'remove_skill', 'set_skill_level'} and re.search(r'[\r\n]', self.subject):
+            raise ValueError('Skill subject must identify one unambiguous name')
         subject = self.subject.strip()
         if not subject:
             raise ValueError('A fact subject is required')
@@ -172,7 +174,15 @@ def contradictions(markdown: str, operations: list[FactOperation]) -> list[str]:
             # A substitution is contradictory only when a different explicit level
             # accompanies the same named fact in its CV segment.
             levels = _LEVELS if operation.kind == 'set_language' else _SKILL_LEVELS
-            for segment in re.split(r'[\n;,|]', markdown):
+            segments = []
+            for line in markdown.splitlines():
+                # Table cells belong to one fact row (name | level). Other
+                # pipe-separated lists contain independent fact segments.
+                if line.strip().startswith('|') and line.strip().endswith('|'):
+                    segments.append(line)
+                else:
+                    segments.extend(re.split(r'[;,|]', line))
+            for segment in segments:
                 normalized = _normalize(segment)
                 if any(_contains(normalized, alias) for alias in aliases) and any(
                     level != operation.value and _contains(normalized, _normalize(level)) for level in levels

@@ -131,3 +131,14 @@ def test_skill_update_rejects_duplicate_normalized_skill_names():
     base.skills.append(Skill(name='PYTHON', level='basic', evidence='Other repo'))
     with pytest.raises(ValueError):
         apply_fact_operations(base, [FactOperation('set_skill_level', 'python', 'expert')])
+
+
+def test_markdown_table_row_associates_fact_with_level_cell():
+    operation = FactOperation('set_language', 'english', 'C1')
+    assert contradictions('| Language | Level |\n| English | B2 |\n| French | C1 |', [operation]) == ['english']
+    assert contradictions('| English | C1 |\n| French | B2 |', [operation]) == []
+
+
+def test_skill_target_rejects_newline_before_normalization():
+    with pytest.raises(ValidationError):
+        FactOperation('remove_skill', 'Python\nJava')
