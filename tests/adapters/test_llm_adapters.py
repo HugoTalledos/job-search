@@ -215,3 +215,17 @@ def test_preference_edit_schema_is_strict_friendly():
 
     schema = strict_json_schema(PreferenceEdit)
     assert schema["$defs"]["PreferenceOperation"]["additionalProperties"] is False
+
+
+def test_confirmed_facts_override_base_resume_in_all_prompts(profile, job, match):
+    from job_agent.adapters.llm import prompts
+    from job_agent.domain.cv_corrections import CorrectionSet, FactOperation
+    corrections = CorrectionSet(version=1, operations=[FactOperation('remove_language', 'English')])
+    contents = [
+        prompts.profile_content('English B2', [], [], corrections=corrections),
+        prompts.match_content(job, profile, 'English B2', corrections=corrections),
+        prompts.tailor_content(job, match, profile, 'English B2', None, corrections=corrections),
+    ]
+    for content in contents:
+        assert 'override any conflicting base resume' in content[0]['text']
+        assert 'remove_language' in content[0]['text']

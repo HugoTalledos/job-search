@@ -24,8 +24,11 @@ class Snapshot:
 class Document:
     def __init__(self, client, collection, doc_id):
         self.client, self.collection, self.id = client, collection, doc_id
+        self.path = f"{collection}/{doc_id}"
 
-    def get(self):
+    def get(self, transaction=None):
+        if transaction is not None:
+            transaction.reads[f"{self.collection}/{self.id}"] = self.client.revisions.get(f"{self.collection}/{self.id}", 0)
         return Snapshot(self.id, self.client.docs.get(f"{self.collection}/{self.id}"))
 
     def update(self, fields):
@@ -49,9 +52,12 @@ class Collection:
         )
 
 
-class FakeFirestoreClient:
+from tests.adapters.test_firestore_cv_tracking import Client as TransactionClient
+
+
+class FakeFirestoreClient(TransactionClient):
     def __init__(self):
-        self.docs = {}
+        super().__init__()
 
     def collection(self, name):
         return Collection(self, name)
@@ -223,7 +229,7 @@ def test_telegram_build_profile_command_stores_profile_for_scoring(webhook, monk
         def __init__(self, model):
             pass
 
-        def infer(self, resume_text, evidence, preferred_locations):
+        def infer(self, resume_text, evidence, preferred_locations, **kwargs):
             return profile
 
     monkeypatch.setattr(webhook, "GitRepositoryReader", FakeRepositories)

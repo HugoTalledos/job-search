@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from job_contracts import SearchPreferences
 
+from ...domain.cv_corrections import CorrectionSet
 from ...domain.preference_edits import PreferenceEdit
 from ...domain.models import (
     JobMatch,
@@ -22,10 +23,10 @@ class LlmProfileInferer:
     def __init__(self, model: StructuredModel) -> None:
         self.model = model
 
-    def infer(self, resume_text: str, evidence: list[RepoEvidence], preferred_locations: list[str]) -> Profile:
+    def infer(self, resume_text: str, evidence: list[RepoEvidence], preferred_locations: list[str], *, corrections: CorrectionSet | None = None) -> Profile:
         return self.model.complete(
             system=prompts.PROFILE_SYSTEM,
-            content=prompts.profile_content(resume_text, evidence, preferred_locations),
+            content=prompts.profile_content(resume_text, evidence, preferred_locations, corrections=corrections),
             schema=Profile,
             effort="high",
         )
@@ -37,10 +38,10 @@ class LlmJobMatcher:
     def __init__(self, model: StructuredModel) -> None:
         self.model = model
 
-    def score(self, job: JobPosting, profile: Profile, resume_text: str) -> JobMatch:
+    def score(self, job: JobPosting, profile: Profile, resume_text: str, *, corrections: CorrectionSet | None = None) -> JobMatch:
         return self.model.complete(
             system=prompts.MATCH_SYSTEM,
-            content=prompts.match_content(job, profile, resume_text),
+            content=prompts.match_content(job, profile, resume_text, corrections=corrections),
             schema=JobMatch,
             effort="low",
             max_tokens=8000,
@@ -60,10 +61,11 @@ class LlmResumeTailor:
         profile: Profile,
         resume_text: str,
         starting_from: str | None = None,
+        *, corrections: CorrectionSet | None = None,
     ) -> TailoredResume:
         return self.model.complete(
             system=prompts.TAILOR_SYSTEM,
-            content=prompts.tailor_content(job, match, profile, resume_text, starting_from),
+            content=prompts.tailor_content(job, match, profile, resume_text, starting_from, corrections=corrections),
             schema=TailoredResume,
             effort="high",
             max_tokens=16000,

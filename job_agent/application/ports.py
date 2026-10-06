@@ -16,6 +16,7 @@ from job_contracts import CollectorPlan, SearchPreferences
 from .cv_models import ClaimResult, CvArtifacts, CvVersionKey, ReadyCvVersion
 from .preference_models import DraftResolution, PreferenceDraft
 
+from ..domain.cv_corrections import CorrectionSet, FactOperation
 from ..domain.preference_edits import PreferenceEdit
 from ..domain.models import JobMatch, JobPosting, Profile, RepoEvidence, RepoRef, StoredProfile, TailoredResume
 
@@ -40,21 +41,29 @@ class CodeRepositoryReader(Protocol):
     def collect_evidence(self, repo: RepoRef) -> RepoEvidence | None: ...
 
 
+class ProfileCorrections(Protocol):
+    def load(self) -> CorrectionSet: ...
+    def confirm(self, operations: list[FactOperation], expected_version: int) -> CorrectionSet: ...
+    def apply_in_transaction(self, transaction, operations: list[FactOperation], expected_version: int) -> CorrectionSet: ...
+
+
 class ProfileStore(Protocol):
     def load(self) -> StoredProfile | None: ...
 
     def save(self, stored: StoredProfile) -> None: ...
+
+    def save_inferred(self, stored: StoredProfile) -> StoredProfile: ...
 
 
 # --- Reasoning (LLM-backed in production) -----------------------------------------------------
 
 
 class ProfileInferer(Protocol):
-    def infer(self, resume_text: str, evidence: list[RepoEvidence], preferred_locations: list[str]) -> Profile: ...
+    def infer(self, resume_text: str, evidence: list[RepoEvidence], preferred_locations: list[str], *, corrections: CorrectionSet | None = None) -> Profile: ...
 
 
 class JobMatcher(Protocol):
-    def score(self, job: JobPosting, profile: Profile, resume_text: str) -> JobMatch: ...
+    def score(self, job: JobPosting, profile: Profile, resume_text: str, *, corrections: CorrectionSet | None = None) -> JobMatch: ...
 
 
 class ResumeTailor(Protocol):
@@ -65,6 +74,7 @@ class ResumeTailor(Protocol):
         profile: Profile,
         resume_text: str,
         starting_from: str | None = None,
+        *, corrections: CorrectionSet | None = None,
     ) -> TailoredResume:
         """Tailor the base resume to ``job``. With ``starting_from`` (an existing tailored version derived
         from the same base), make the smallest changes that make it fit the new posting."""

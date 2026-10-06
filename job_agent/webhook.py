@@ -16,7 +16,7 @@ from .adapters.llm import LlmJobMatcher, LlmPreferenceInterpreter, LlmProfileInf
 from .adapters.notifications import TelegramNotifier, TelegramProfileReporter
 from .adapters.notifications.telegram_cv import TelegramCvDelivery
 from .adapters.notifications.telegram_preferences import TelegramPreferencesChat
-from .adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore
+from .adapters.persistence import FirestoreProfileStore, FirestoreSearchSettingsStore, FirestoreProfileCorrections
 from .adapters.persistence.firebase_cv_artifacts import FirebaseCvArtifactStore
 from .adapters.persistence.firestore_cv_tracking import FirestoreCvTrackingStore
 from .adapters.persistence.firestore_applied_proposals import FirestoreAppliedProposals
@@ -143,6 +143,7 @@ def build_profile_use_case(
         ),
         inferer=LlmProfileInferer(build_llm(cfg.llm, "profile")),
         store=store,
+        corrections=FirestoreProfileCorrections(store.client),
         refresh_days=cfg.profile_refresh_days,
         preferred_locations=lambda: (settings.load_preferences() or SearchPreferences()).locations,
     )
