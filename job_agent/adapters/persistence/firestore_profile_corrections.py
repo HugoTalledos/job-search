@@ -43,10 +43,17 @@ class FirestoreProfileCorrections:
             return self.apply_in_transaction(transaction, operations, expected_version)
         return confirm(self.client.transaction())
 
+    def preview(self, operations: list[FactOperation], expected_version: int) -> CorrectionSet:
+        """Validate the same ordered projection as confirmation without any writes."""
+        @firestore.transactional
+        def preview(transaction):
+            return self.apply_in_transaction(transaction, operations, expected_version, persist=False)
+        return preview(self.client.transaction())
+
     def prepare_in_transaction(self, transaction):
         return (*self._read(transaction), self.profile.get(transaction=transaction).to_dict())
 
-    def apply_in_transaction(self, transaction, operations: list[FactOperation], expected_version: int, *, prepared=None) -> CorrectionSet:
+    def apply_in_transaction(self, transaction, operations: list[FactOperation], expected_version: int, *, prepared=None, persist=True) -> CorrectionSet:
         operations = [FactOperation.model_validate(op) for op in operations]
         payload = json.dumps([op.model_dump() for op in operations], sort_keys=True)
         request_id = sha256(f'{expected_version}:{payload}'.encode()).hexdigest()
@@ -76,6 +83,8 @@ class FirestoreProfileCorrections:
             records.append((correction_id, {'operation': op.model_dump(), 'confirmed_at': now,
                                             'scope': 'global', 'version': version + 1}))
         effective = apply_fact_operations(base, new_active)
+        if not persist:
+            return CorrectionSet(version=version + 1, operations=new_active)
         for correction_id, record in records:
             transaction.set(self.collection.document(correction_id), record)
         transaction.set(self.current, {'version': version + 1, 'active_ids': new_ids, 'last_request_id': request_id})

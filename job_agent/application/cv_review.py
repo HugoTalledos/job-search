@@ -102,9 +102,9 @@ class CvReviewService:
             raise ValueError('Precisa el fragmento que deseas corregir')
         spans = []
         for item in replacements:
-            if item.old_text == markdown or markdown.count(item.old_text) != 1:
+            start = markdown.find(item.old_text)
+            if item.old_text == markdown or start < 0 or markdown.find(item.old_text, start + 1) >= 0:
                 raise ValueError('Precisa un fragmento único; no se reemplaza todo el CV')
-            start = markdown.index(item.old_text)
             spans.append((start, start + len(item.old_text), item.new_text))
         spans.sort()
         if any(a[1] > b[0] for a, b in zip(spans, spans[1:])):
@@ -124,9 +124,8 @@ class CvReviewService:
         corrections = self.corrections.load()
         proposal = self.interpreter.propose(markdown, instruction, self.generation.profile_reader.load(), corrections)
         updated = self._replace(markdown, proposal.replacements)
-        # Projection/revocation semantics are validated transactionally on confirmation.
-        self._validate(updated, CorrectionSet(version=corrections.version,
-            operations=corrections.operations + [op for op in proposal.fact_operations if op.kind != 'revoke']))
+        projected = self.corrections.preview(proposal.fact_operations, corrections.version) if proposal.fact_operations else corrections
+        self._validate(updated, projected)
         proposal_id = self.reviews.save_proposal(review_id, revision.revision_id, corrections.version, proposal)
         return proposal.model_copy(update={'proposal_id': proposal_id})
 

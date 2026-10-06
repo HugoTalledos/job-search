@@ -213,3 +213,43 @@ def test_correction_version_conflict_and_failed_rebuild(review_harness):
     h.service.confirm_edit(review.review_id,proposal.proposal_id,'42')
     assert h.service.corrections.load().version == 2
     assert 'Corrección guardada' in notices[0]
+
+
+def test_overlapping_occurrences_are_ambiguous(review_harness):
+    h = review_harness
+    review, first = editing(h, '# CV\n***\nPython', [('**', '*')])
+    with pytest.raises(ValueError, match='fragmento único'):
+        h.service.propose_edit(review.review_id, '42', 'corregir formato')
+    assert h.reviews.load(review.review_id, '42').active_revision_id == first.revision_id
+
+
+@pytest.mark.parametrize('fail_commit', [False, True])
+def test_revoke_denial_and_restore_fragment_atomically(review_harness, monkeypatch, fail_commit):
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    h = review_harness
+    review, first = editing(h, '# CV\nPython\nOtras habilidades', [('Otras habilidades', 'Team leader')])
+    h.service.corrections.confirm([FactOperation('deny_claim', 'Team leader')], 0)
+    correction_id = h.client.docs['profile_corrections/current']['active_ids'][0]
+    h.service.interpreter = SimpleNamespace(propose=lambda *args: CvEditProposal(
+        replacements=[TextReplacement(old_text='Otras habilidades', new_text='Team leader')],
+        fact_operations=[FactOperation('revoke', correction_id)], explanation='Restaurar dato confirmado'))
+    proposal = h.service.propose_edit(review.review_id, '42', 'Revoco esa negación; sí fui Team leader')
+    assert h.service.corrections.load().version == 1  # Preview must never publish facts.
+    assert h.service.corrections.load().operations == [FactOperation('deny_claim', 'Team leader')]
+    if fail_commit:
+        original = h.reviews.publish_revision_in_transaction
+        def fail(*args, **kwargs):
+            original(*args, **kwargs)
+            raise RuntimeError('simulated revision failure after revocation')
+        monkeypatch.setattr(h.reviews, 'publish_revision_in_transaction', fail)
+        with pytest.raises(RuntimeError):
+            h.service.confirm_edit(review.review_id, proposal.proposal_id, '42')
+        assert h.service.corrections.load().version == 1
+        assert h.service.corrections.load().operations == [FactOperation('deny_claim', 'Team leader')]
+        assert h.reviews.load(review.review_id, '42').active_revision_id == first.revision_id
+        assert h.reviews.load_proposal(review.review_id, proposal.proposal_id).status == 'pending'
+    else:
+        revision = h.service.confirm_edit(review.review_id, proposal.proposal_id, '42')
+        assert h.use_case.artifacts.read_markdown(revision.markdown_uri) == '# CV\nPython\nTeam leader'
+        assert h.service.corrections.load().version == 2
+        assert h.service.corrections.load().operations == []
