@@ -372,8 +372,9 @@ def add_telegram_webhook(
             review = cv_reviews.open_delivered(ready, chat_id, datetime.now(timezone.utc))
             cv_reviews.show_preview(review.review_id, chat_id, message_id)
         except LegacyCvLookupUnavailable:
-            notify('La búsqueda de PDFs antiguos requiere configurar el índice de recuperación. '
-                   'Avisa al administrador y vuelve a intentar /corregir_cv; tu PDF sigue guardado.')
+            notify('La búsqueda de PDFs antiguos requiere el índice de campo único de grupo de colecciones '
+                   'versions.pdf_message_id en Firestore. Avisa al administrador y vuelve a intentar '
+                   '/corregir_cv; tu PDF sigue guardado.')
         except Exception as exc:
             log.error('No se pudo abrir el CV guardado (%s)', type(exc).__name__)
             notify('No pude abrir el CV guardado. Inténtalo de nuevo.')

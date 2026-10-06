@@ -508,3 +508,116 @@ def test_cv_review_production_dependencies_are_wired(webhook, monkeypatch):
     assert service.after_profile_change.__self__ is captured['preferences']
     assert service.after_profile_change.__name__ == 'after_profile_change'
     assert service.notify.__self__ is captured['messenger']
+
+
+def test_confirmed_language_denial_survives_profile_rebuild_and_later_cv(
+    webhook, monkeypatch, tmp_path, profile, job, match, tailored, caplog
+):
+    from types import SimpleNamespace
+    from job_agent.application.cv_review_models import CvEditProposal, TextReplacement
+    from job_agent.domain.cv_corrections import FactOperation
+    from job_agent.adapters.notifications.telegram_cv import PreviewReceipt
+    from job_agent.scoring.firestore import FirestoreScoringStore
+    from tests.adapters.test_firestore_cv_tracking import Client
+
+    inferred = profile.model_copy(update={'languages': ['English (B2)', 'Español (nativo)']})
+    client = Client()
+    client.docs['profiles/current'] = inferred.model_dump()
+    for posting_id, message_id in [('original', 91), ('later', 92)]:
+        client.docs[f'job_postings/{posting_id}'] = {'job': job.model_dump(), 'status': 'NOTIFIED'}
+        client.docs[f'telegram_offer_messages/42_{message_id}'] = {'posting_id': posting_id}
+    resume = tmp_path / 'base.md'
+    resume.write_text('# Test\nEnglish B2\nPython')
+    monkeypatch.setattr(webhook, 'load_config', lambda: Config(resume_path=str(resume)))
+    monkeypatch.setattr(webhook.firestore, 'Client', lambda **kwargs: client)
+    previews, proposals, rendered, pdfs, profiles_seen, notices = [], [], [], [], [], []
+    corrected = '# Test\nPython'
+    monkeypatch.setattr(webhook, 'LlmJobMatcher', lambda model: SimpleNamespace(score=lambda *args, **kwargs: match))
+
+    def tailor(*args, **kwargs):
+        profiles_seen.append(args[2])
+        markdown = '# Test\nEnglish B2\nPython' if len(profiles_seen) == 1 else corrected
+        return tailored.model_copy(update={'resume_markdown': markdown})
+
+    monkeypatch.setattr(webhook, 'LlmResumeTailor', lambda model: SimpleNamespace(tailor=tailor))
+    monkeypatch.setattr(webhook, 'CvEditInterpreter', lambda model: SimpleNamespace(propose=lambda *args: CvEditProposal(
+        replacements=[TextReplacement(old_text='English B2\n', new_text='')],
+        fact_operations=[FactOperation('remove_language', 'English')], explanation='Dato confirmado')))
+    monkeypatch.setattr(webhook, 'RequiredPdfRenderer', lambda: SimpleNamespace(
+        render=lambda markdown: rendered.append(markdown) or markdown.encode()))
+
+    class Delivery:
+        def __init__(self, token):
+            pass
+
+        def send_preview(self, chat_id, reply_to, review_id, revision_id, summary, markdown):
+            previews.append((review_id, revision_id, markdown))
+            return PreviewReceipt(300 + len(previews), 400 + len(previews))
+
+        def send_edit_proposal(self, *args):
+            proposals.append(args)
+            return 501
+
+        def send_summary(self, *args):
+            return 601
+
+        def send_pdf(self, chat_id, reply_to, pdf, posting_id, *, review_id):
+            pdfs.append(pdf)
+            if len(pdfs) == 1:
+                raise RuntimeError('sensitive transport detail')
+            return 602
+
+    monkeypatch.setattr(webhook, 'TelegramCvDelivery', Delivery)
+    monkeypatch.setattr(webhook.TelegramNotifier, 'send_text', lambda self, text: notices.append(text))
+    monkeypatch.setattr(webhook.TelegramPreferencesChat, 'answer', lambda *args: None)
+    monkeypatch.setattr(webhook, 'GitRepositoryReader', lambda **kwargs: SimpleNamespace(list_repositories=lambda: []))
+    rebuilds = []
+
+    def infer(*args, **kwargs):
+        rebuilds.append(kwargs.get('corrections'))
+        return inferred
+
+    monkeypatch.setattr(webhook, 'LlmProfileInferer', lambda model: SimpleNamespace(infer=infer))
+    http = TestClient(webhook.build_webhook_app())
+    headers = {'X-Telegram-Bot-Api-Secret-Token': 'telegram-secret'}
+
+    def post(text=None, reply=None, data=None):
+        message = {'message_id': 700, 'chat': {'id': 42, 'type': 'private'}, 'from': {'id': 42}}
+        if data:
+            payload = {'callback_query': {'id': 'callback', 'data': data, 'from': {'id': 42}, 'message': message}}
+        else:
+            message['text'] = text
+            if reply:
+                message['reply_to_message'] = {'message_id': reply, 'from': {'id': 1, 'is_bot': True}}
+            payload = {'message': message}
+        assert http.post('/webhooks/telegram', headers=headers, json=payload).status_code == 200
+
+    post('/ajustar_cv', 91)
+    review, first, markdown = previews[-1]
+    assert 'English B2' in markdown
+    assert rendered == pdfs == []
+    post('No hablo inglés; elimina English B2', 301)
+    assert 'futuros CV' in proposals[-1][-2]
+    assert FirestoreScoringStore(client).load().languages == inferred.languages
+    proposal_id = proposals[-1][3]
+    post(data=f'cv:confirm:{review}:{proposal_id}')
+    _, revision, markdown = previews[-1]
+    assert revision != first and markdown == corrected
+    effective = FirestoreScoringStore(client).load()
+    assert effective.languages == ['Español (nativo)']
+    post(data=f'cv:approve:{review}:{first}')
+    assert rendered == []
+    post(data=f'cv:approve:{review}:{revision}')
+    assert rendered == [corrected] and pdfs == [corrected.encode()]
+    post(data=f'cv:approve:{review}:{revision}')
+    assert rendered == [corrected] and pdfs == [corrected.encode(), corrected.encode()]
+    assert len(profiles_seen) == 1
+    assert 'sensitive transport detail' not in caplog.text
+    post('/build-profile')
+    assert len(rebuilds) == 1
+    assert FirestoreScoringStore(client).load().languages == ['Español (nativo)']
+    assert 'English (B2)' in client.docs['profiles/current']['inferred_profile']['languages']
+    post('/ajustar_cv', 92)
+    assert previews[-1][2] == corrected
+    assert profiles_seen[-1].languages == ['Español (nativo)']
+    assert len(profiles_seen) == 2

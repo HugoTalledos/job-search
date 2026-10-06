@@ -1093,7 +1093,7 @@ def test_legacy_lookup_missing_index_explains_retry_without_changing_state(revie
     monkeypatch.setattr(h.client,'collection_group',missing_index)
     h.post('/corregir_cv',reply=500)
     assert h.client.docs==before
-    assert any('índice' in m and '/corregir_cv' in m for m in h.messenger.sent)
+    assert any('índice' in m and 'versions.pdf_message_id' in m and '/corregir_cv' in m for m in h.messenger.sent)
     assert not any('private backend' in m for m in h.messenger.sent)
 
 
