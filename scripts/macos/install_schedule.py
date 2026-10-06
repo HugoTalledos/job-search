@@ -6,8 +6,9 @@
     python3 scripts/macos/install_schedule.py --dry-run             # solo muestra el plist
     python3 scripts/macos/install_schedule.py --uninstall
 
-launchd ejecuta una corrida pendiente al despertar si el Mac estaba suspendido a la hora programada
-(varias pendientes se unen en una). Si estaba apagado, esa corrida no ocurre.
+Además instala (con sudo) un LaunchDaemon que despierta el Mac un minuto antes de cada corrida
+mediante `pmset schedule wake`, para que la suspensión no la interrumpa. --no-wake lo omite.
+Si el Mac está apagado (no suspendido), la corrida no ocurre.
 """
 
 from __future__ import annotations
@@ -65,6 +66,90 @@ def build_plist(label: str, times: list[dict[str, int]], component: str = "colle
     }
 
 
+def wake_times(times: list[dict[str, int]]) -> list[dict[str, int]]:
+    """Un minuto antes de cada corrida (00:00 -> 23:59)."""
+    minutes = [(t["Hour"] * 60 + t["Minute"] - 1) % 1440 for t in times]
+    return [{"Hour": m // 60, "Minute": m % 60} for m in minutes]
+
+
+def wake_script(owner: str, times: list[dict[str, int]]) -> str:
+    """Programa (idempotente) los despertares de hoy y mañana que aún no pasaron y mantiene el Mac
+    despierto 5 min para que launchd lance la corrida. Corre en cada despertar, así la cadena no se corta.
+
+    En el último despertar del día lo mantiene 7 min y luego lo suspende, cuando el colector ya terminó
+    y nadie usó el teclado o el ratón en los últimos 5 min."""
+    slots = [f"{t['Hour']:02d}:{t['Minute']:02d}" for t in times]
+    return f"""now=$(date +%s)
+for day in 0 1; do
+  for hm in {" ".join(slots)}; do
+    when="$(date -v+${{day}}d +%m/%d/%y) $hm:00"
+    [ "$(date -j -f '%m/%d/%y %H:%M:%S' "$when" +%s)" -gt "$now" ] || continue
+    pmset schedule cancel wake "$when" {owner} 2>/dev/null
+    pmset schedule wake "$when" {owner}
+  done
+done
+if [ "$(date +%H:%M)" != "{max(slots)}" ]; then
+  caffeinate -i -t 300
+  exit 0
+fi
+caffeinate -i -t 420
+while pgrep -f local_collector >/dev/null; do sleep 30; done
+idle=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {{print int($NF / 1000000000); exit}}')
+[ "${{idle:-0}}" -ge 300 ] && pmset sleepnow
+exit 0
+"""
+
+
+def build_wake_plist(label: str, times: list[dict[str, int]]) -> dict:
+    wake_label = f"{label}.wake"
+    wakes = wake_times(times)
+    return {
+        "Label": wake_label,
+        "ProgramArguments": ["/bin/sh", "-c", wake_script(wake_label, wakes)],
+        "StartCalendarInterval": wakes,
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        "RunAtLoad": True,
+    }
+
+
+def install_wake(label: str, times: list[dict[str, int]]) -> bool:
+    """Instala el LaunchDaemon de root (pmset schedule requiere root). Pide la contraseña con sudo."""
+    wake_label = f"{label}.wake"
+    target = f"/Library/LaunchDaemons/{wake_label}.plist"
+    staged = REPO / "logs" / f"{wake_label}.plist"
+    staged.write_bytes(plistlib.dumps(build_wake_plist(label, times)))
+    print("Para despertar el Mac antes de cada corrida se necesita sudo (pmset).")
+    steps = [
+        ["launchctl", "bootout", f"system/{wake_label}"],
+        ["install", "-m", "644", "-o", "root", "-g", "wheel", str(staged), target],
+        ["launchctl", "bootstrap", "system", target],
+    ]
+    try:
+        for i, step in enumerate(steps):
+            result = subprocess.run(["sudo", *step], capture_output=True, text=True)
+            if result.returncode != 0 and i > 0:
+                print(f"No se pudo programar el despertar ({' '.join(step)}): {result.stderr.strip()}")
+                return False
+    finally:
+        staged.unlink(missing_ok=True)
+    return True
+
+
+def uninstall_wake(label: str) -> None:
+    wake_label = f"{label}.wake"
+    target = Path(f"/Library/LaunchDaemons/{wake_label}.plist")
+    if not target.exists():
+        return
+    subprocess.run(["sudo", "launchctl", "bootout", f"system/{wake_label}"], capture_output=True)
+    subprocess.run(["sudo", "rm", "-f", str(target)], capture_output=True)
+    sched = subprocess.run(["pmset", "-g", "sched"], capture_output=True, text=True).stdout
+    for when in re.findall(rf"wake at (\S+ \S+) by '{re.escape(wake_label)}'", sched):
+        date, clock = when.split()
+        month, day, year = date.split("/")
+        subprocess.run(["sudo", "pmset", "schedule", "cancel", "wake", f"{month}/{day}/{year[-2:]} {clock}",
+                        wake_label], capture_output=True)
+
+
 def launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=check)
 
@@ -96,6 +181,7 @@ def main() -> int:
     parser.add_argument("--label")
     parser.add_argument("--dry-run", action="store_true", help="Mostrar el plist sin instalar nada")
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument("--no-wake", action="store_true", help="No despertar el Mac antes de cada corrida")
     args = parser.parse_args()
     label = args.label or default_label(args.component)
 
@@ -111,6 +197,7 @@ def main() -> int:
     if args.uninstall:
         launchctl("bootout", domain, str(plist_path), check=False)
         plist_path.unlink(missing_ok=True)
+        uninstall_wake(label)
         print(f"Programación eliminada ({label}).")
         return 0
 
@@ -128,6 +215,8 @@ def main() -> int:
     launchctl("enable", f"{domain}/{label}", check=False)
 
     print(f"Agente programado a las {', '.join(args.times)} ({label}).")
+    if not args.no_wake and install_wake(label, parse_times(args.times)):
+        print("  El Mac se despertará un minuto antes de cada corrida (ver: pmset -g sched).")
     print(f"  Correr ahora:     launchctl kickstart {domain}/{label}")
     print(f"  Ver el log:       tail -f {REPO}/logs/collector-$(date +%Y-%m-%d).log")
     print(f"  Estado:           launchctl print {domain}/{label} | head -20")

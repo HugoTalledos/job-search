@@ -31,7 +31,8 @@ if [ ! -x "$PYTHON" ]; then
   exit 1
 fi
 
-"$PYTHON" -m local_collector "$@"
+# Evita que el Mac vuelva a suspenderse a mitad de la corrida.
+caffeinate -i "$PYTHON" -m local_collector "$@"
 STATUS=$?
 echo "Buscador terminó con código $STATUS"
 find logs -name 'collector-*.log' -mtime +30 -delete 2>/dev/null
