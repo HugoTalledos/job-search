@@ -400,7 +400,7 @@ def test_revocation_through_interpreter_uses_active_ids(review_harness):
     review,_=editing(h,'# CV\nPython\nOtras habilidades',[('Otras habilidades','Team leader')])
     h.service.corrections.confirm([FactOperation('deny_claim','Team leader')],0)
     def complete(**kwargs):
-        facts=json.loads(kwargs['content'])['corrections']
+        facts=json.loads(kwargs['content'][0]['text'])['corrections']
         assert facts.get('active_ids'), 'Interpreter must receive active correction references'
         return CvEditProposal(replacements=[TextReplacement(old_text='Otras habilidades',new_text='Team leader')],
             fact_operations=[FactOperation('revoke',facts['active_ids'][0])],explanation='Restaurar')
