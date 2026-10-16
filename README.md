@@ -351,7 +351,7 @@ LinkedIn, lo que reduce el riesgo de verificaciones de seguridad.
    programadas), por ejemplo en `~/dev/job-search`.
 2. **Sesión de LinkedIn** (una vez; repítelo si LinkedIn cierra la sesión):
    ```bash
-   uvx mcp-server-linkedin@latest --login
+   uvx --with patchright==1.63.0 mcp-server-linkedin@4.27.0 --login
    ```
 3. Quitar la programación: `python3 scripts/macos/install_schedule.py --uninstall`.
 

@@ -163,7 +163,7 @@ def preflight() -> list[str]:
     if not shutil.which("uvx"):
         problems.append("No encuentro uvx: instálalo con 'brew install uv'")
     if not (Path.home() / ".linkedin-mcp" / "cookies.json").exists():
-        problems.append("No hay sesión de LinkedIn: ejecuta 'uvx mcp-server-linkedin@latest --login'")
+        problems.append("No hay sesión de LinkedIn: ejecuta 'uvx --with patchright==1.63.0 mcp-server-linkedin@4.27.0 --login'")
     home = Path.home()
     if any(REPO.is_relative_to(home / p) for p in PROTECTED):
         problems.append(

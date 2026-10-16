@@ -26,7 +26,7 @@ def _expand_env(value):
 class LinkedInConfig(BaseModel):
     enabled: bool = True
     command: str = "uvx"
-    args: list[str] = Field(default_factory=lambda: ["mcp-server-linkedin@latest"])
+    args: list[str] = Field(default_factory=lambda: ["--with", "patchright==1.63.0", "mcp-server-linkedin@4.27.0"])
     env: dict[str, str] = Field(default_factory=dict)
     max_pages: int = 2
 
